@@ -1,8 +1,8 @@
 const data = window.BUSAN_SEA_DATA;
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
-// 로그인 기능은 잠시 빼고, 어디서나 바로 열리는 프로토타입으로 사용합니다.
-const supabase = null;
+let supabase = null;
+const supabaseSettings = { url: 'https://djximbcwymgcdnkllwbr.supabase.co', publishableKey: 'sb_publishable_DyW8KqpJYwzxGqhkVxCw7Q_vLv_ukV8' };
 
 let screen = 'home';
 let chosenPlace = data.places[0];
@@ -10,7 +10,7 @@ let chosenMission = null;
 let recommendations = data.missions.slice(0, 6);
 let leisureFilter = { people: '2', age: '청소년' };
 let userPosition = null;
-let currentUser = { id: 'local-demo-user', user_metadata: { username: data.currentUser.name || '바다 친구' } };
+let currentUser = null;
 let communityPosts = [];
 let bookingActivity = null;
 let toastTimer;
@@ -49,6 +49,39 @@ const showToast = (message) => {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
 };
+
+async function ensureSupabase() {
+  // 화면을 열 때 로그인 서버에 접속하지 않고, 로그인 버튼을 누른 순간에만 요청합니다.
+  return true;
+}
+
+const sessionStorageKey = 'cashbada-login-session';
+const getStoredSession = () => {
+  try { return JSON.parse(localStorage.getItem(sessionStorageKey) || 'null'); } catch { return null; }
+};
+const saveSession = (session) => localStorage.setItem(sessionStorageKey, JSON.stringify(session));
+const clearSession = () => localStorage.removeItem(sessionStorageKey);
+async function supabaseRequest(path, options = {}) {
+  const session = getStoredSession();
+  const headers = {
+    apikey: supabaseSettings.publishableKey,
+    'Content-Type': 'application/json',
+    ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+    ...(options.headers || {})
+  };
+  const response = await fetch(`${supabaseSettings.url}${path}`, { ...options, headers });
+  const body = response.status === 204 ? null : await response.json().catch(() => null);
+  if (!response.ok) throw new Error(body?.msg || body?.message || '서버 연결에 실패했어요.');
+  return body;
+}
+
+async function openAuthModal() {
+  showToast('로그인 기능을 준비하고 있어요.');
+  if (await ensureSupabase()) {
+    if (currentUser) { screen = 'profile'; render(); showToast('이미 로그인되어 있어요.'); return; }
+    app.insertAdjacentHTML('beforeend', authModal());
+  }
+}
 
 function openMemoryDatabase() {
   return new Promise((resolve, reject) => {
@@ -195,6 +228,7 @@ function profile() {
 }
 
 function profile() {
+  if (!currentUser) return `<main class="page">${pageTitle('마이 페이지', '로그인하면 내 미션과 추억을 이어서 볼 수 있어요.')}<section class="profile-hero"><div class="avatar">🌊</div><h2>로그인이 필요해요</h2><p>아이디와 비밀번호로 간단히 가입할 수 있습니다.</p><button class="recommend" data-action="auth-form">회원가입 또는 로그인</button></section></main>`;
   const completed = data.currentUser.completedMissionIds.map((id) => data.missions.find((item) => item.id === id)).filter(Boolean);
   const records = completed.map((mission) => {
     const memory = missionMemories.find((item) => item.missionId === mission.id);
@@ -206,7 +240,7 @@ function profile() {
 function points() { return `<main class="page">${pageTitle('포인트 내역', '미션 완료 때 포인트가 쌓여요.', 'profile')}<section class="profile-hero"><p>현재 보유 포인트</p><div class="profile-points">${data.currentUser.points.toLocaleString()} P</div></section></main>`; }
 
 function authModal() {
-  return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>캐시 바다 계정</h2><p class="muted">이메일 없이 아이디와 비밀번호만 사용해요.</p><label class="field" style="margin-top:12px">아이디<input id="auth-username" autocomplete="username" placeholder="영문, 숫자, . _ - (3~20자)"></label><label class="field" style="margin-top:12px">비밀번호<input id="auth-password" type="password" autocomplete="current-password" placeholder="6자 이상"></label><label class="consent"><input id="auth-consent" type="checkbox"> <span>서비스 이용을 위한 아이디·비밀번호 처리와 공개 후기 작성 규칙에 동의합니다.</span></label><div class="card-actions"><button class="secondary" data-action="signin">로그인</button><button class="start" data-action="signup">회원가입</button></div></section></div>`;
+  return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>캐시 바다 계정</h2><p class="muted">이메일 없이 아이디와 비밀번호만 사용해요.</p><label class="field" style="margin-top:12px">아이디<input id="auth-username" autocomplete="username" placeholder="영문, 숫자, . _ - (3~20자)"></label><label class="field" style="margin-top:12px">비밀번호<input id="auth-password" type="password" autocomplete="current-password" placeholder="6자 이상"></label><label class="consent"><input id="auth-consent" type="checkbox"> <span>서비스 이용을 위한 아이디·비밀번호 처리와 내 미션 기록 저장에 동의합니다.</span></label><div class="card-actions"><button class="secondary" data-action="signin">로그인</button><button class="start" data-action="signup">회원가입</button></div></section></div>`;
 }
 
 function reviewModal() {
@@ -421,17 +455,18 @@ app.addEventListener('click', async (event) => {
   if (action === 'place-missions') { screen = 'missions'; render(); }
   if (action === 'recommend') recommendMissions();
   if (action === 'mission') { chosenMission = data.missions.find((m) => m.id === button.dataset.id); screen = 'detail'; render(); }
-  if (action === 'complete') { const m = data.missions.find((item) => item.id === button.dataset.id); await submitMissionVerification(m); }
+  if (action === 'complete') { if (!currentUser) { showToast('미션 인증을 저장하려면 먼저 로그인해 주세요.'); await openAuthModal(); return; } const m = data.missions.find((item) => item.id === button.dataset.id); await submitMissionVerification(m); }
   if (action === 'mood') { selectedMood = button.dataset.value; document.querySelectorAll('[data-action="mood"]').forEach((item) => item.classList.toggle('active', item.dataset.value === selectedMood)); }
   if (action === 'memory-weather') { selectedWeather = button.dataset.value; document.querySelectorAll('[data-action="memory-weather"]').forEach((item) => item.classList.toggle('active', item.dataset.value === selectedWeather)); }
   if (action === 'memory-detail') { const memory = missionMemories.find((item) => item.missionId === button.dataset.id); if (memory) app.insertAdjacentHTML('beforeend', missionMemoryModal(memory)); }
   if (action === 'apply-leisure-filter') { leisureFilter = { people: document.querySelector('#leisure-people').value, age: document.querySelector('#leisure-age').value }; render(); }
   if (action === 'map' || action === 'inquiry') showToast('프로토타입에서는 예시 안내를 보여줍니다.');
   if (action === 'booking') {
+    if (!currentUser) { showToast('포인트를 사용하려면 먼저 로그인해 주세요.'); await openAuthModal(); return; }
     bookingActivity = data.leisureActivities.find((item) => item.id === button.dataset.id);
     app.insertAdjacentHTML('beforeend', bookingModal());
   }
-  if (action === 'auth-form') showToast('로그인 기능은 화면 확인을 위해 잠시 꺼 두었습니다.');
+  if (action === 'auth-form') openAuthModal();
   if (action === 'review-form') app.insertAdjacentHTML('beforeend', reviewModal());
   if (action === 'close') document.querySelector('.modal')?.remove();
   if (action === 'signup') submitAuth('signup');
@@ -448,10 +483,73 @@ app.addEventListener('click', async (event) => {
     render();
     showToast(`예약 체험 완료! ${points.toLocaleString()}P 할인 적용 (결제는 진행되지 않았어요).`);
   }
-  if (action === 'signout') { if (supabase) await supabase.auth.signOut(); currentUser = null; screen = 'home'; render(); showToast('로그아웃했어요.'); }
+  if (action === 'signout') { clearSession(); currentUser = null; screen = 'home'; render(); showToast('로그아웃했어요.'); }
 });
 
+async function loadCommunityPosts() {
+  try {
+    communityPosts = await supabaseRequest('/rest/v1/community_posts?select=*&order=created_at.desc') || [];
+    if (screen === 'community') render();
+  } catch (error) { console.error('후기 불러오기 오류:', error); }
+}
+
+async function submitAuth(type) {
+  const username = document.querySelector('#auth-username')?.value.trim().toLowerCase();
+  const password = document.querySelector('#auth-password')?.value;
+  if (!username || !/^[a-z0-9._-]{3,20}$/.test(username)) return showToast('아이디는 영문, 숫자, . _ - 로 3~20자 입력해 주세요.');
+  if (!password || password.length < 6) return showToast('비밀번호는 6자 이상으로 입력해 주세요.');
+  if (type === 'signup' && !document.querySelector('#auth-consent')?.checked) return showToast('회원가입 및 서비스 이용 동의를 체크해 주세요.');
+  const email = `${username}@cashbada.local`;
+  try {
+    const result = type === 'signup'
+      ? await supabaseRequest('/auth/v1/signup', { method: 'POST', body: JSON.stringify({ email, password, data: { username } }) })
+      : await supabaseRequest('/auth/v1/token?grant_type=password', { method: 'POST', body: JSON.stringify({ email, password }) });
+    if (!result?.access_token || !result?.user) {
+      return showToast('가입이 완료됐어요. 같은 아이디와 비밀번호로 로그인해 주세요.');
+    }
+    saveSession(result);
+    currentUser = result.user;
+    loadProgress();
+    document.querySelector('.modal')?.remove();
+    screen = 'profile';
+    render();
+    showToast(type === 'signup' ? '회원가입이 완료됐어요!' : '로그인했어요!');
+  } catch (error) {
+    const message = String(error.message || '');
+    console.error('로그인 오류:', error);
+    showToast(message.includes('already') || message.includes('registered') ? '이미 사용 중인 아이디예요. 로그인해 주세요.' : '아이디 또는 비밀번호를 확인해 주세요.');
+  }
+}
+
+async function submitReview() {
+  const activity = document.querySelector('#review-activity')?.value;
+  const title = document.querySelector('#review-title')?.value.trim();
+  const body = document.querySelector('#review-body')?.value.trim();
+  const rating = Number(document.querySelector('#review-rating')?.value);
+  if (!title || !body) return showToast('제목과 후기 내용을 모두 입력해 주세요.');
+  try {
+    await supabaseRequest('/rest/v1/community_posts', { method: 'POST', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ user_id: currentUser.id, author: usernameFromUser(currentUser), activity, title, rating, body }) });
+    document.querySelector('.modal')?.remove();
+    screen = 'community';
+    await loadCommunityPosts();
+    showToast('후기가 등록되어 다른 사람에게도 보여요.');
+  } catch (error) { console.error('후기 등록 오류:', error); showToast('후기 등록에 실패했어요. 로그인 상태를 확인해 주세요.'); }
+}
+
 async function initialize() {
+  render();
+  if (supabase) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      currentUser = session?.user || null;
+      supabase.auth.onAuthStateChange((_event, session) => {
+        currentUser = session?.user || null;
+        loadProgress();
+        render();
+      });
+    } catch (error) { console.error('로그인 정보 확인 오류:', error); }
+  }
+  currentUser = getStoredSession()?.user || null;
   loadProgress();
   await loadMissionMemories();
   render();
