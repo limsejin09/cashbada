@@ -1,0 +1,263 @@
+const data = window.BUSAN_SEA_DATA;
+const app = document.querySelector('#app');
+const toast = document.querySelector('#toast');
+// 로그인 기능은 잠시 빼고, 어디서나 바로 열리는 프로토타입으로 사용합니다.
+const supabase = null;
+
+let screen = 'home';
+let chosenPlace = data.places[0];
+let chosenMission = null;
+let recommendations = data.missions.slice(0, 6);
+let leisureFilter = { people: '2', age: '청소년' };
+let userPosition = null;
+let currentUser = { id: 'local-demo-user', user_metadata: { username: data.currentUser.name || '바다 친구' } };
+let communityPosts = [];
+let bookingActivity = null;
+let toastTimer;
+
+const won = (number) => number === 0 ? '무료' : `${number.toLocaleString()}원`;
+const escapeHtml = (value = '') => String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
+const usernameFromUser = (user) => user?.user_metadata?.username || user?.email?.split('@')[0] || '바다 친구';
+const formatDate = (value) => new Intl.DateTimeFormat('ko-KR', { month: 'short', day: 'numeric' }).format(new Date(value));
+const progressKey = () => currentUser ? `cashbada-progress-${currentUser.id}` : null;
+const loadProgress = () => {
+  const key = progressKey();
+  if (!key) return;
+  try {
+    const saved = JSON.parse(localStorage.getItem(key));
+    if (saved && Array.isArray(saved.completedMissionIds) && Number.isFinite(saved.points)) {
+      data.currentUser.points = saved.points;
+      data.currentUser.completedMissionIds = saved.completedMissionIds;
+    } else {
+      data.currentUser.points = 0;
+      data.currentUser.completedMissionIds = [];
+    }
+  } catch { data.currentUser.points = 0; data.currentUser.completedMissionIds = []; }
+};
+const saveProgress = () => {
+  const key = progressKey();
+  if (key) localStorage.setItem(key, JSON.stringify({ points: data.currentUser.points, completedMissionIds: data.currentUser.completedMissionIds }));
+};
+const showToast = (message) => {
+  toast.textContent = message;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
+};
+
+window.addEventListener('error', (event) => {
+  console.error(event.error || event.message);
+  if (!app.innerHTML) {
+    app.innerHTML = '<main class="page"><section class="empty"><h2>캐시 바다를 여는 중 문제가 생겼어요.</h2><p>인터넷 연결을 확인한 뒤 F5로 다시 열어 주세요.</p></section></main>';
+  }
+});
+const distanceKm = (latitude, longitude) => {
+  if (!userPosition) return null;
+  const radius = 6371;
+  const radians = (value) => value * Math.PI / 180;
+  const lat = radians(latitude - userPosition.latitude);
+  const lng = radians(longitude - userPosition.longitude);
+  const value = Math.sin(lat / 2) ** 2 + Math.cos(radians(userPosition.latitude)) * Math.cos(radians(latitude)) * Math.sin(lng / 2) ** 2;
+  return radius * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+};
+
+function header() {
+  const account = currentUser
+    ? `<button class="points" data-go="profile">👤 ${escapeHtml(usernameFromUser(currentUser))}</button>`
+    : '<button class="points" data-action="auth-form">로그인</button>';
+  return `<header class="header"><button class="brand" data-go="home" aria-label="첫 화면으로"><span class="logo">🌊</span><span><b>캐시 바다</b><small>CATCH SEA</small></span></button><div class="top-actions">${account}<button class="points" data-go="points">🐚 ${data.currentUser.points.toLocaleString()}P</button></div></header>`;
+}
+
+function navigation() {
+  const tabs = [['home', '🏠', '홈'], ['missions', '🎯', '미션'], ['leisure', '🏄', '레저 추천'], ['community', '💬', '커뮤니티'], ['profile', '👤', '마이']];
+  return `<nav class="bottom-nav" aria-label="주요 메뉴">${tabs.map(([id, icon, label]) => `<button class="nav ${screen === id ? 'active' : ''}" data-go="${id}"><span class="ni">${icon}</span><span>${label}</span></button>`).join('')}</nav>`;
+}
+
+function pageTitle(title, subtitle, back = 'home') {
+  return `<div class="page-head"><button class="back" data-go="${back}" aria-label="이전 화면">←</button><div><h1>${title}</h1><p>${subtitle}</p></div></div>`;
+}
+
+function placeCard() {
+  const p = chosenPlace;
+  return `<article class="place-sheet"><div class="top"><span class="place-emoji">${p.icon}</span><div><h3>${p.name}</h3><p class="muted">${p.category} · ${p.distance}km · ⭐ ${p.rating} (${p.reviews})</p></div></div><p class="muted" style="margin-top:10px">${p.note}</p><div class="card-actions"><button class="secondary" data-action="save">저장</button><button class="start" data-action="place-missions">관련 미션 보기</button></div></article>`;
+}
+
+function home() {
+  const complete = data.currentUser.completedMissionIds.length;
+  return `<main class="page"><section class="hero"><span class="eyebrow">TODAY IN BUSAN</span><h1>바다를 즐기고<br><span>부산을 더 푸르게</span></h1><p>내 주변의 해양 미션을 발견하고<br>작은 행동으로 바다를 지켜보세요.</p><button class="primary" data-go="missions">오늘의 미션 6개 받기 <span>→</span></button></section><section class="status"><div><small>오늘의 미션</small><strong>${complete} / 6</strong></div><div class="progress"><i style="width:${Math.min(100, complete / 6 * 100)}%"></i></div><button class="link-btn" data-go="missions">진행 보기 →</button></section><section class="section-title"><div><span class="eyebrow">NEARBY PLACES</span><h2>지금 부산 바다는?</h2></div><button class="circle-btn" data-action="location" aria-label="현재 위치 확인">⌖</button></section><button class="recommend" data-action="location" style="margin:0 0 14px">${userPosition ? '현재 위치 기준 가까운 바다 놀거리 다시 추천받기' : '현재 위치를 사용해 바다 근처 놀거리 추천받기'}</button><p class="muted" style="margin:-7px 0 14px">위치는 추천할 때만 사용하며 저장하지 않아요.</p><div class="chips">${['전체', '바다', '먹거리', '사진', '레저', '휴식'].map((item, index) => `<button class="chip ${index === 0 ? 'active' : ''}" data-action="filter">${item}</button>`).join('')}</div><section class="map" aria-label="부산 장소 예시 지도">${data.places.map((p) => `<button class="marker ${p.id === chosenPlace.id ? 'selected' : ''}" style="left:${p.x}%;top:${p.y}%" data-action="place" data-id="${p.id}" aria-label="${p.name}">${p.icon}</button>`).join('')}<span class="me" aria-label="현재 위치"></span><span class="map-caption">📍 ${userPosition ? '현재 위치 사용 중' : '광안리 해수욕장 기준'} · 예시 지도</span></section>${placeCard()}</main>`;
+}
+
+function missionCard(mission) {
+  const isDone = data.currentUser.completedMissionIds.includes(mission.id);
+  return `<article class="mission-card"><div class="card-top"><span class="tag">${mission.category}</span><span class="tag eco">🌿 환경 기여 ${mission.ecoScore}/5</span></div><h3>${mission.title}</h3><p class="muted">📍 ${mission.location} · ${mission.distance}km</p><div class="facts"><span>⏱ ${mission.minutes}분</span><span>💳 ${won(mission.cost)}</span><span>🐚 ${mission.points}P</span><span>${mission.difficulty}</span></div><div class="card-actions"><button class="save" data-action="save" aria-label="미션 저장">♡</button><button class="start" data-action="mission" data-id="${mission.id}">${isDone ? '완료 확인' : '시작하기'}</button></div></article>`;
+}
+
+function missions() {
+  return `<main class="page">${pageTitle('오늘의 미션', '조건에 맞춰 새로운 바다 미션을 추천해요.')}<section class="filter-box"><div class="form-grid"><label class="field">가능 시간<select id="time"><option value="30">30분</option><option value="90" selected>90분</option><option value="120">120분</option></select></label><label class="field">예산<select id="budget"><option value="0">0원</option><option value="20000" selected>2만원 이하</option><option value="50000">5만원 이하</option></select></label><label class="field full">관심 분야<select id="interest"><option value="전체">전체</option><option value="사진">사진</option><option value="환경">환경</option><option value="먹거리">먹거리</option><option value="레저">레저</option></select></label></div><button class="recommend" data-action="recommend">조건에 맞는 미션 추천받기</button></section><div>${recommendations.map(missionCard).join('')}</div></main>`;
+}
+
+function missionDetail() {
+  const m = chosenMission;
+  const done = data.currentUser.completedMissionIds.includes(m.id);
+  return `<main class="page">${pageTitle('미션 진행', '바다를 즐기며 환경도 지켜요.', 'missions')}<section class="mission-hero"><span class="tag">${m.category}</span><p class="big">${m.title}</p><div class="facts"><span>📍 ${m.location}</span><span>⏱ ${m.minutes}분</span><span>🐚 ${m.points}P</span></div><p class="muted">인증 방법: ${m.verification}</p></section><div class="notice">🛟 ${m.safety} 위험하면 보호자와 함께해 주세요.</div>${done ? '<div class="success" style="margin-top:16px">이미 완료한 미션입니다.</div>' : `<section class="verification"><b>미션 인증하기</b><p class="muted" style="margin-top:5px">프로토타입에서는 제출 즉시 완료 처리됩니다.</p><button class="recommend" data-action="complete" data-id="${m.id}">인증 제출하고 ${m.points}P 받기</button></section>`}</main>`;
+}
+
+function leisure() {
+  const filtered = data.leisureActivities.filter((item) => leisureFilter.age === '모든 연령' || item.age.includes(leisureFilter.age) || item.age.includes('모든')).map((item) => ({ ...item, distance: distanceKm(item.latitude, item.longitude) })).sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999));
+  return `<main class="page">${pageTitle('레저 추천', '인원과 나이대에 맞는 부산 바다 체험이에요.')}<div class="leisure-banner" id="weather-status">🌤️ 부산의 실시간 날씨를 불러오는 중이에요.</div><section class="filter-box"><div class="form-grid"><label class="field">참여 인원<select id="leisure-people">${[1,2,3,4].map((n) => `<option value="${n}" ${leisureFilter.people === String(n) ? 'selected' : ''}>${n === 4 ? '4명 이상' : `${n}명`}</option>`).join('')}</select></label><label class="field">나이대<select id="leisure-age">${['청소년', '성인', '가족', '모든 연령'].map((age) => `<option ${leisureFilter.age === age ? 'selected' : ''}>${age}</option>`).join('')}</select></label></div><button class="recommend" data-action="apply-leisure-filter">이 조건으로 추천받기</button></section><div>${filtered.map((item) => `<article class="leisure-card"><div class="card-top"><span class="tag">${item.type}</span><span class="stars">⭐ ${item.rating}</span></div><h3>${item.emoji} ${item.title}</h3><p class="muted">📍 ${item.place} · ${item.age} · ${leisureFilter.people}명 참여</p><div class="facts"><span>⏱ ${item.minutes}분</span><span>💳 ${won(item.cost)}</span>${item.distance !== null ? `<span>📍 약 ${item.distance.toFixed(1)}km</span>` : ''}</div><div class="reason">${item.reason}</div><div class="card-actions"><button class="secondary" data-action="map">지도에서 보기</button><button class="start" data-action="booking" data-id="${item.id}">예약 체험하기</button></div></article>`).join('') || '<div class="empty">조건에 맞는 체험이 없어요.</div>'}</div></main>`;
+}
+
+function community() {
+  const posts = communityPosts.length ? communityPosts.map((post) => `<article class="review-card"><div class="review-meta"><span>${escapeHtml(post.author)} · <span class="tag">${escapeHtml(post.activity)}</span></span><span>${formatDate(post.created_at)}</span></div><h3>${escapeHtml(post.title)}</h3><div class="stars">${'★'.repeat(post.rating)}${'☆'.repeat(5 - post.rating)}</div><p>${escapeHtml(post.body)}</p></article>`).join('') : '<div class="empty">아직 등록된 후기가 없어요.<br>부산 바다의 첫 이야기를 남겨 주세요!</div>';
+  return `<main class="page">${pageTitle('바다 커뮤니티', '누구나 후기를 보고, 로그인하면 남길 수 있어요.')}<p class="muted" style="margin-bottom:12px">${currentUser ? `${escapeHtml(usernameFromUser(currentUser))}님으로 로그인 중` : '후기 작성은 로그인 후 가능해요.'}</p><button class="recommend" data-action="review-form" style="margin-bottom:16px">+ 후기 작성하기</button>${posts}</main>`;
+}
+
+function profile() {
+  if (!currentUser) return `<main class="page">${pageTitle('마이 페이지', '가입한 아이디로 로그인하면 내 정보를 이어서 사용할 수 있어요.')}<section class="profile-hero"><div class="avatar">🌊</div><h2>로그인이 필요해요</h2><p>아이디와 비밀번호로 간단히 가입할 수 있습니다.</p><button class="recommend" data-action="auth-form">회원가입 또는 로그인</button></section></main>`;
+  return `<main class="page"><section class="profile-hero"><div class="avatar">🌊</div><h2>${escapeHtml(usernameFromUser(currentUser))}</h2><p>부산 바다를 지키는 오늘의 여행가</p><div class="profile-points">${data.currentUser.points.toLocaleString()} P</div></section><section class="section-title"><h2>미션 인증 내역</h2></section>${data.currentUser.completedMissionIds.map((id) => { const m = data.missions.find((item) => item.id === id); return m ? `<article class="point-card"><b>${m.title}</b><strong style="display:block;color:#13835c;margin-top:9px">+ ${m.points}P</strong></article>` : ''; }).join('') || '<div class="empty">아직 완료한 미션이 없어요.</div>'}<div class="menu-list"><button class="menu-row" data-action="signout">로그아웃 <span>→</span></button></div></main>`;
+}
+
+function points() { return `<main class="page">${pageTitle('포인트 내역', '미션 완료 때 포인트가 쌓여요.', 'profile')}<section class="profile-hero"><p>현재 보유 포인트</p><div class="profile-points">${data.currentUser.points.toLocaleString()} P</div></section></main>`; }
+
+function authModal() {
+  return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>캐시 바다 계정</h2><p class="muted">이메일 없이 아이디와 비밀번호만 사용해요.</p><label class="field" style="margin-top:12px">아이디<input id="auth-username" autocomplete="username" placeholder="영문, 숫자, . _ - (3~20자)"></label><label class="field" style="margin-top:12px">비밀번호<input id="auth-password" type="password" autocomplete="current-password" placeholder="6자 이상"></label><label class="consent"><input id="auth-consent" type="checkbox"> <span>서비스 이용을 위한 아이디·비밀번호 처리와 공개 후기 작성 규칙에 동의합니다.</span></label><div class="card-actions"><button class="secondary" data-action="signin">로그인</button><button class="start" data-action="signup">회원가입</button></div></section></div>`;
+}
+
+function reviewModal() {
+  return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>후기 작성하기</h2><label class="field">체험한 활동<select id="review-activity"><option>광안리 SUP</option><option>송정 서핑</option><option>국립해양박물관</option><option>다대포 해변 산책</option><option>기타 부산 바다 체험</option></select></label><label class="field" style="margin-top:12px">제목<input id="review-title" maxlength="80" placeholder="후기 제목"></label><label class="field" style="margin-top:12px">별점<select id="review-rating"><option value="5">5점</option><option value="4">4점</option><option value="3">3점</option><option value="2">2점</option><option value="1">1점</option></select></label><label class="field" style="margin-top:12px">후기 내용<textarea id="review-body" maxlength="500" placeholder="다른 사람에게 도움이 될 경험을 적어 주세요."></textarea></label><button class="recommend" data-action="submit-review">후기 등록하기</button></section></div>`;
+}
+
+function bookingModal() {
+  const item = bookingActivity;
+  const people = Number(leisureFilter.people);
+  const total = item.cost * people;
+  const usable = Math.min(data.currentUser.points, total);
+  return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>${item.emoji} ${item.title} 예약 체험</h2><p class="muted">실제 예약이나 결제는 진행되지 않는 연습 화면입니다.</p><div class="notice" style="margin-top:12px">${people}명 기준 체험 금액(예시) <b>${won(total)}</b><br>보유 포인트 <b>${data.currentUser.points.toLocaleString()}P</b> (1P = 1원 할인)</div><label class="field" style="margin-top:12px">체험 날짜<input id="booking-date" type="date"></label><label class="field" style="margin-top:12px">체험 시간<select id="booking-time"><option>10:00</option><option>13:00</option><option>15:30</option></select></label><label class="field" style="margin-top:12px">사용할 포인트<input id="booking-points" type="number" min="0" max="${usable}" value="${usable}"></label><p class="muted">최대 ${usable.toLocaleString()}P까지 사용할 수 있어요. 사용한 포인트는 차감됩니다.</p><div class="card-actions"><button class="secondary" data-action="close">취소</button><button class="start" data-action="confirm-booking">예약 내용 확인</button></div></section></div>`;
+}
+
+function render() {
+  const pages = { home, missions, detail: missionDetail, leisure, community, profile, points };
+  app.innerHTML = header() + pages[screen]() + navigation();
+  if (screen === 'leisure') loadBusanWeather();
+}
+
+async function loadCommunityPosts() {
+  if (!supabase) return;
+  const { data: posts, error } = await supabase.from('community_posts').select('*').order('created_at', { ascending: false });
+  if (error) { console.error(error); showToast('후기를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.'); return; }
+  communityPosts = posts || [];
+  if (screen === 'community') render();
+}
+
+async function submitAuth(type) {
+  if (!supabase) return showToast('회원 기능 연결을 불러오지 못했어요. 인터넷 연결 후 새로고침해 주세요.');
+  const username = document.querySelector('#auth-username').value.trim().toLowerCase();
+  const password = document.querySelector('#auth-password').value;
+  if (!/^[a-z0-9._-]{3,20}$/.test(username)) return showToast('아이디는 영문, 숫자, . _ - 로 3~20자 입력해 주세요.');
+  if (password.length < 6) return showToast('비밀번호는 6자 이상으로 입력해 주세요.');
+  if (type === 'signup' && !document.querySelector('#auth-consent').checked) return showToast('회원가입 전 서비스 이용 동의에 체크해 주세요.');
+  const email = `${username}@cashbada.local`;
+  const result = type === 'signup'
+    ? await supabase.auth.signUp({ email, password, options: { data: { username } } })
+    : await supabase.auth.signInWithPassword({ email, password });
+  if (result.error) return showToast(result.error.message.includes('already') ? '이미 사용 중인 아이디예요. 로그인해 주세요.' : '아이디 또는 비밀번호를 확인해 주세요.');
+  currentUser = result.data.user || result.data.session?.user;
+  loadProgress();
+  document.querySelector('.modal')?.remove();
+  screen = 'profile';
+  render();
+  showToast(type === 'signup' ? '회원가입이 완료되었어요!' : '로그인했어요!');
+}
+
+async function submitReview() {
+  const activity = document.querySelector('#review-activity').value;
+  const title = document.querySelector('#review-title').value.trim();
+  const body = document.querySelector('#review-body').value.trim();
+  const rating = Number(document.querySelector('#review-rating').value);
+  if (!title || !body) return showToast('제목과 후기 내용을 모두 입력해 주세요.');
+  if (!supabase) {
+    communityPosts.unshift({ id: `demo-${Date.now()}`, author: usernameFromUser(currentUser), activity, title, rating, body, created_at: new Date().toISOString() });
+    document.querySelector('.modal')?.remove();
+    screen = 'community';
+    render();
+    showToast('후기가 이 기기 화면에 등록되었어요.');
+    return;
+  }
+  const { error } = await supabase.from('community_posts').insert({ user_id: currentUser.id, author: usernameFromUser(currentUser), activity, title, rating, body });
+  if (error) { console.error(error); return showToast('후기 등록에 실패했어요. 잠시 후 다시 시도해 주세요.'); }
+  document.querySelector('.modal')?.remove();
+  screen = 'community';
+  await loadCommunityPosts();
+  showToast('후기가 등록되어 다른 사람에게도 보여요.');
+}
+
+function recommendMissions() {
+  const time = Number(document.querySelector('#time').value);
+  const budget = Number(document.querySelector('#budget').value);
+  const interest = document.querySelector('#interest').value;
+  const candidates = data.missions.filter((m) => m.minutes <= time && m.cost <= budget && (interest === '전체' || m.category === interest));
+  recommendations = [...candidates, ...data.missions.filter((m) => !candidates.includes(m))].slice(0, 6);
+  render();
+}
+
+async function loadBusanWeather() {
+  const target = document.querySelector('#weather-status');
+  if (!target) return;
+  try {
+    const response = await fetch('https://api.open-meteo.com/v1/forecast?latitude=35.1796&longitude=129.0756&current=temperature_2m,weather_code,wind_speed_10m&timezone=Asia%2FSeoul');
+    const weather = await response.json();
+    const clear = weather.current.weather_code <= 3;
+    target.innerHTML = `<span class="leisure-icon">${clear ? '🌤️' : '🌦️'}</span><strong>지금 부산 날씨: ${clear ? '맑음 또는 구름 조금' : '현장 날씨 확인 필요'}</strong><br>${weather.current.temperature_2m}℃ · 바람 ${weather.current.wind_speed_10m}km/h`;
+  } catch { target.textContent = '날씨 정보를 불러오지 못했어요. 현장 안전 안내를 확인해 주세요.'; }
+}
+
+function requestLocation() {
+  if (!navigator.geolocation) return showToast('이 브라우저에서는 위치 기능을 사용할 수 없어요.');
+  navigator.geolocation.getCurrentPosition((position) => { userPosition = { latitude: position.coords.latitude, longitude: position.coords.longitude }; screen = 'leisure'; render(); showToast('현재 위치 근처 순서로 추천했어요.'); }, () => showToast('위치 권한이 없어 광안리 기준으로 추천할게요.'), { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
+}
+
+app.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-action], [data-go]');
+  if (!button) return;
+  if (button.dataset.go) { screen = button.dataset.go; render(); if (screen === 'community') loadCommunityPosts(); return; }
+  const action = button.dataset.action;
+  if (action === 'location') requestLocation();
+  if (action === 'filter') { document.querySelectorAll('.chip').forEach((chip) => chip.classList.remove('active')); button.classList.add('active'); }
+  if (action === 'place') { chosenPlace = data.places.find((p) => p.id === button.dataset.id); render(); }
+  if (action === 'save') showToast('저장 목록 기능은 준비 중이에요.');
+  if (action === 'place-missions') { screen = 'missions'; render(); }
+  if (action === 'recommend') recommendMissions();
+  if (action === 'mission') { chosenMission = data.missions.find((m) => m.id === button.dataset.id); screen = 'detail'; render(); }
+  if (action === 'complete') { const m = data.missions.find((item) => item.id === button.dataset.id); if (!data.currentUser.completedMissionIds.includes(m.id)) { data.currentUser.completedMissionIds.push(m.id); data.currentUser.points += m.points; saveProgress(); } screen = 'profile'; render(); showToast(`미션 성공! ${m.points}P를 받았어요.`); }
+  if (action === 'apply-leisure-filter') { leisureFilter = { people: document.querySelector('#leisure-people').value, age: document.querySelector('#leisure-age').value }; render(); }
+  if (action === 'map' || action === 'inquiry') showToast('프로토타입에서는 예시 안내를 보여줍니다.');
+  if (action === 'booking') {
+    bookingActivity = data.leisureActivities.find((item) => item.id === button.dataset.id);
+    app.insertAdjacentHTML('beforeend', bookingModal());
+  }
+  if (action === 'auth-form') showToast('로그인 기능은 화면 확인을 위해 잠시 꺼 두었습니다.');
+  if (action === 'review-form') app.insertAdjacentHTML('beforeend', reviewModal());
+  if (action === 'close') document.querySelector('.modal')?.remove();
+  if (action === 'signup') submitAuth('signup');
+  if (action === 'signin') submitAuth('signin');
+  if (action === 'submit-review') submitReview();
+  if (action === 'confirm-booking') {
+    const points = Number(document.querySelector('#booking-points').value);
+    const total = bookingActivity.cost * Number(leisureFilter.people);
+    const available = Math.min(data.currentUser.points, total);
+    if (!Number.isInteger(points) || points < 0 || points > available) return showToast(`0P부터 ${available.toLocaleString()}P까지 입력해 주세요.`);
+    data.currentUser.points -= points;
+    saveProgress();
+    document.querySelector('.modal')?.remove();
+    render();
+    showToast(`예약 체험 완료! ${points.toLocaleString()}P 할인 적용 (결제는 진행되지 않았어요).`);
+  }
+  if (action === 'signout') { if (supabase) await supabase.auth.signOut(); currentUser = null; screen = 'home'; render(); showToast('로그아웃했어요.'); }
+});
+
+async function initialize() {
+  loadProgress();
+  render();
+}
+
+initialize();
