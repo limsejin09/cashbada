@@ -9,4 +9,7 @@
 .nav-icon { display: grid; place-items: center; width: 27px; height: 27px; border-radius: 9px; background: #eef6f6; }
 .nav-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
 .nav.active .nav-icon { background: #d9f3f1; }
+.consent { display: flex; gap: 8px; align-items: flex-start; color: #58727e; font-size: 11px; line-height: 1.55; }
+.consent input { margin-top: 3px; accent-color: #08789a; }
+.memory-card { cursor: pointer; border-color: #b9e6df; background: linear-gradient(120deg, #f8fffe, #f0faf8); }
 @media (max-width: 540px) { .map { height: 300px; } }
