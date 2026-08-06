@@ -46,7 +46,11 @@ window.BUSAN_SEA_DATA = {
     { id:'l1', title:'광안리 SUP 체험', place:'광안리 해수욕장', type:'수상 레저', minutes:90, cost:18000, rating:4.8, age:'초등학생 이상', weather:'맑은 날', emoji:'🏄', reason:'초보자도 참여할 수 있는 수상 레저예요.', latitude:35.1532, longitude:129.1187 },
     { id:'l2', title:'송정 서핑 입문', place:'송정 해수욕장', type:'수상 레저', minutes:120, cost:20000, rating:4.7, age:'초등학생 이상', weather:'파도 확인', emoji:'🌊', reason:'활동적인 바다 체험을 좋아한다면 추천해요.', latitude:35.1785, longitude:129.1995 },
     { id:'l3', title:'국립해양박물관 탐방', place:'영도 동삼동', type:'해양 생태', minutes:70, cost:0, rating:4.5, age:'모든 연령', weather:'날씨 영향 없음', emoji:'🐋', reason:'비가 와도 즐길 수 있는 실내 체험이에요.', latitude:35.0782, longitude:129.0803 },
-    { id:'l4', title:'다대포 노을 산책', place:'다대포 해수욕장', type:'해변 산책', minutes:60, cost:0, rating:4.6, age:'모든 연령', weather:'맑은 날', emoji:'🌅', reason:'가볍게 걷고 싶은 날에 좋아요.', latitude:35.0485, longitude:128.9656 }
+    { id:'l4', title:'다대포 노을 산책', place:'다대포 해수욕장', type:'해변 산책', minutes:60, cost:0, rating:4.6, age:'모든 연령', weather:'맑은 날', emoji:'🌅', reason:'가볍게 걷고 싶은 날에 좋아요.', latitude:35.0485, longitude:128.9656 },
+    { id:'l5', title:'해운대 바다 카약 체험', place:'해운대 해수욕장', type:'수상 레저', minutes:80, cost:25000, rating:4.6, age:'초등학생 이상', weather:'바람 약한 날', emoji:'🛶', reason:'잔잔한 바다에서 노를 저어 보는 체험이에요.', latitude:35.1587, longitude:129.1604 },
+    { id:'l6', title:'기장 해안 스노클링 입문', place:'기장 연화리', type:'수상 레저', minutes:100, cost:30000, rating:4.5, age:'청소년 이상', weather:'파도 낮은 날', emoji:'🤿', reason:'바다 생물을 가까이 관찰하고 싶은 사람에게 어울려요.', latitude:35.2285, longitude:129.2270 },
+    { id:'l7', title:'송도 해상 케이블카 바다 전망', place:'송도해수욕장', type:'해양 관광', minutes:50, cost:22000, rating:4.7, age:'모든 연령', weather:'맑은 날', emoji:'🚡', reason:'물에 들어가지 않고도 바다 풍경을 즐길 수 있어요.', latitude:35.0774, longitude:129.0176 },
+    { id:'l8', title:'이기대 해안길 걷기', place:'이기대 해안산책로', type:'해변 산책', minutes:90, cost:0, rating:4.8, age:'모든 연령', weather:'맑은 날', emoji:'🥾', reason:'여럿이 천천히 걷기 좋은 해안 산책 코스예요.', latitude:35.1265, longitude:129.1208 }
   ],
   communityPosts: []
 };

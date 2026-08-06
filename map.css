@@ -1,0 +1,12 @@
+/* 현재 위치 기반 지도를 위한 화면 규칙 */
+.map { height: 315px; background: #c6e8e3; }
+.map::before { display: none; }
+.map-caption { z-index: 500; box-shadow: 0 2px 8px #083b5c33; }
+.map-legend { display: flex; gap: 8px; flex-wrap: wrap; margin: 11px 0 14px; color: #526f78; font-size: 10px; }
+.map-legend span { padding: 5px 8px; border-radius: 9px; background: #eef7f7; }
+.leaflet-popup-content { font-family: "Noto Sans KR", system-ui, sans-serif; font-size: 12px; }
+.leaflet-control-attribution { font-size: 9px !important; }
+.nav-icon { display: grid; place-items: center; width: 27px; height: 27px; border-radius: 9px; background: #eef6f6; }
+.nav-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.nav.active .nav-icon { background: #d9f3f1; }
+@media (max-width: 540px) { .map { height: 300px; } }

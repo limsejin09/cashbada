@@ -14,6 +14,8 @@ let currentUser = { id: 'local-demo-user', user_metadata: { username: data.curre
 let communityPosts = [];
 let bookingActivity = null;
 let toastTimer;
+let seaMap = null;
+let nearbyLoadToken = 0;
 
 const won = (number) => number === 0 ? '무료' : `${number.toLocaleString()}원`;
 const escapeHtml = (value = '') => String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
@@ -69,8 +71,15 @@ function header() {
 }
 
 function navigation() {
-  const tabs = [['home', '🏠', '홈'], ['missions', '🎯', '미션'], ['leisure', '🏄', '레저 추천'], ['community', '💬', '커뮤니티'], ['profile', '👤', '마이']];
-  return `<nav class="bottom-nav" aria-label="주요 메뉴">${tabs.map(([id, icon, label]) => `<button class="nav ${screen === id ? 'active' : ''}" data-go="${id}"><span class="ni">${icon}</span><span>${label}</span></button>`).join('')}</nav>`;
+  const icon = (name) => ({
+    home: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>',
+    mission: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="m16 8 5-5"/></svg>',
+    leisure: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 15c3 0 3-3 6-3s3 3 6 3 3-3 6-3M3 19c3 0 3-3 6-3s3 3 6 3 3-3 6-3M12 4v7m0-7 3 3m-3-3L9 7"/></svg>',
+    community: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8m-8 3h5"/></svg>',
+    profile: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg>'
+  }[name]);
+  const tabs = [['home', 'home', '홈'], ['missions', 'mission', '미션'], ['leisure', 'leisure', '레저 추천'], ['community', 'community', '커뮤니티'], ['profile', 'profile', '마이']];
+  return `<nav class="bottom-nav" aria-label="주요 메뉴">${tabs.map(([id, iconName, label]) => `<button class="nav ${screen === id ? 'active' : ''}" data-go="${id}"><span class="ni nav-icon">${icon(iconName)}</span><span>${label}</span></button>`).join('')}</nav>`;
 }
 
 function pageTitle(title, subtitle, back = 'home') {
@@ -84,7 +93,7 @@ function placeCard() {
 
 function home() {
   const complete = data.currentUser.completedMissionIds.length;
-  return `<main class="page"><section class="hero"><span class="eyebrow">TODAY IN BUSAN</span><h1>바다를 즐기고<br><span>부산을 더 푸르게</span></h1><p>내 주변의 해양 미션을 발견하고<br>작은 행동으로 바다를 지켜보세요.</p><button class="primary" data-go="missions">오늘의 미션 6개 받기 <span>→</span></button></section><section class="status"><div><small>오늘의 미션</small><strong>${complete} / 6</strong></div><div class="progress"><i style="width:${Math.min(100, complete / 6 * 100)}%"></i></div><button class="link-btn" data-go="missions">진행 보기 →</button></section><section class="section-title"><div><span class="eyebrow">NEARBY PLACES</span><h2>지금 부산 바다는?</h2></div><button class="circle-btn" data-action="location" aria-label="현재 위치 확인">⌖</button></section><button class="recommend" data-action="location" style="margin:0 0 14px">${userPosition ? '현재 위치 기준 가까운 바다 놀거리 다시 추천받기' : '현재 위치를 사용해 바다 근처 놀거리 추천받기'}</button><p class="muted" style="margin:-7px 0 14px">위치는 추천할 때만 사용하며 저장하지 않아요.</p><div class="chips">${['전체', '바다', '먹거리', '사진', '레저', '휴식'].map((item, index) => `<button class="chip ${index === 0 ? 'active' : ''}" data-action="filter">${item}</button>`).join('')}</div><section class="map" aria-label="부산 장소 예시 지도">${data.places.map((p) => `<button class="marker ${p.id === chosenPlace.id ? 'selected' : ''}" style="left:${p.x}%;top:${p.y}%" data-action="place" data-id="${p.id}" aria-label="${p.name}">${p.icon}</button>`).join('')}<span class="me" aria-label="현재 위치"></span><span class="map-caption">📍 ${userPosition ? '현재 위치 사용 중' : '광안리 해수욕장 기준'} · 예시 지도</span></section>${placeCard()}</main>`;
+  return `<main class="page"><section class="hero"><span class="eyebrow">TODAY IN BUSAN</span><h1>바다를 즐기고<br><span>부산을 더 푸르게</span></h1><p>내 주변의 해양 미션을 발견하고<br>작은 행동으로 바다를 지켜보세요.</p><button class="primary" data-go="missions">오늘의 미션 6개 받기 <span>→</span></button></section><section class="status"><div><small>오늘의 미션</small><strong>${complete} / 6</strong></div><div class="progress"><i style="width:${Math.min(100, complete / 6 * 100)}%"></i></div><button class="link-btn" data-go="missions">진행 보기 →</button></section><section class="section-title"><div><span class="eyebrow">NEARBY SEA MAP</span><h2>${userPosition ? '내 주변 바다 지도' : '부산 바다 지도'}</h2></div><button class="circle-btn" data-action="location" aria-label="현재 위치 확인">⌖</button></section><button class="recommend" data-action="location" style="margin:0 0 14px">${userPosition ? '현재 위치로 지도 다시 맞추기' : '위치 허용하고 내 주변 바다 지도 보기'}</button><p class="muted" style="margin:-7px 0 14px">지도는 손가락/마우스로 이동하고 +, − 버튼으로 확대·축소할 수 있어요. 위치는 저장하지 않아요.</p><div class="search"><input id="map-search" aria-label="지도 장소 검색" placeholder="해변, 바다 레저, 지역을 검색하세요"><button data-action="map-search">찾기</button></div><div class="map-legend"><span>🏖 해변</span><span>🍽 주변 음식점</span><span>🏄 바다 레저</span><span>📍 내 위치</span></div><section id="nearby-map" class="map" aria-label="현재 위치 기반 바다 지도"><span class="map-caption">${userPosition ? '내 위치 기준 주변 정보' : '위치 허용 전: 부산 바다 기본 지도'}</span></section></main>`;
 }
 
 function missionCard(mission) {
@@ -102,9 +111,19 @@ function missionDetail() {
   return `<main class="page">${pageTitle('미션 진행', '바다를 즐기며 환경도 지켜요.', 'missions')}<section class="mission-hero"><span class="tag">${m.category}</span><p class="big">${m.title}</p><div class="facts"><span>📍 ${m.location}</span><span>⏱ ${m.minutes}분</span><span>🐚 ${m.points}P</span></div><p class="muted">인증 방법: ${m.verification}</p></section><div class="notice">🛟 ${m.safety} 위험하면 보호자와 함께해 주세요.</div>${done ? '<div class="success" style="margin-top:16px">이미 완료한 미션입니다.</div>' : `<section class="verification"><b>미션 인증하기</b><p class="muted" style="margin-top:5px">프로토타입에서는 제출 즉시 완료 처리됩니다.</p><button class="recommend" data-action="complete" data-id="${m.id}">인증 제출하고 ${m.points}P 받기</button></section>`}</main>`;
 }
 
+function leisureGuide(item) {
+  const people = Number(leisureFilter.people);
+  const age = leisureFilter.age;
+  const groupTip = people === 1 ? '혼자 참여한다면 강습 시작 15분 전 도착해 안전 안내를 들어 보세요.' : people >= 4 ? '여러 명이면 역할을 나누고 서로의 구명조끼 착용을 확인해 주세요.' : `${people}명이 함께라면 사진 촬영 시간과 휴식 시간을 미리 정하면 좋아요.`;
+  const ageTip = age === '가족' ? '가족 추천: 보호자 동행과 어린이용 구명조끼 여부를 먼저 확인하세요.' : age === '청소년' ? '청소년 추천: 체험 가능 나이와 보호자 동행 규정을 현장에 확인하세요.' : age === '성인' ? '성인 추천: 초보자는 기본 강습이 포함된 시간대를 골라 보세요.' : '모든 연령 추천: 이동이 편한 신발과 물을 준비하세요.';
+  const packing = item.type.includes('수상') ? '준비물: 물에 젖어도 되는 옷, 여벌 옷, 수건, 자외선 차단제' : item.type.includes('해양') ? '준비물: 편한 신발, 물, 얇은 겉옷' : '준비물: 모자, 물, 자외선 차단제';
+  return `<div class="reason"><b>왜 추천하나요?</b> ${item.reason}<br><b>참여 팁:</b> ${groupTip}<br><b>나이대 팁:</b> ${ageTip}<br><b>${packing}</b><br><small>체험 비용은 예시이며, 실제 예약 전 운영처 정보를 확인해 주세요.</small></div>`;
+}
+
 function leisure() {
-  const filtered = data.leisureActivities.filter((item) => leisureFilter.age === '모든 연령' || item.age.includes(leisureFilter.age) || item.age.includes('모든')).map((item) => ({ ...item, distance: distanceKm(item.latitude, item.longitude) })).sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999));
-  return `<main class="page">${pageTitle('레저 추천', '인원과 나이대에 맞는 부산 바다 체험이에요.')}<div class="leisure-banner" id="weather-status">🌤️ 부산의 실시간 날씨를 불러오는 중이에요.</div><section class="filter-box"><div class="form-grid"><label class="field">참여 인원<select id="leisure-people">${[1,2,3,4].map((n) => `<option value="${n}" ${leisureFilter.people === String(n) ? 'selected' : ''}>${n === 4 ? '4명 이상' : `${n}명`}</option>`).join('')}</select></label><label class="field">나이대<select id="leisure-age">${['청소년', '성인', '가족', '모든 연령'].map((age) => `<option ${leisureFilter.age === age ? 'selected' : ''}>${age}</option>`).join('')}</select></label></div><button class="recommend" data-action="apply-leisure-filter">이 조건으로 추천받기</button></section><div>${filtered.map((item) => `<article class="leisure-card"><div class="card-top"><span class="tag">${item.type}</span><span class="stars">⭐ ${item.rating}</span></div><h3>${item.emoji} ${item.title}</h3><p class="muted">📍 ${item.place} · ${item.age} · ${leisureFilter.people}명 참여</p><div class="facts"><span>⏱ ${item.minutes}분</span><span>💳 ${won(item.cost)}</span>${item.distance !== null ? `<span>📍 약 ${item.distance.toFixed(1)}km</span>` : ''}</div><div class="reason">${item.reason}</div><div class="card-actions"><button class="secondary" data-action="map">지도에서 보기</button><button class="start" data-action="booking" data-id="${item.id}">예약 체험하기</button></div></article>`).join('') || '<div class="empty">조건에 맞는 체험이 없어요.</div>'}</div></main>`;
+  const ageMatches = (item) => leisureFilter.age === '모든 연령' || item.age.includes('모든') || (leisureFilter.age === '청소년' && (item.age.includes('초등') || item.age.includes('청소년'))) || (leisureFilter.age === '가족' && (item.age.includes('초등') || item.age.includes('가족'))) || leisureFilter.age === '성인';
+  const filtered = data.leisureActivities.filter(ageMatches).map((item) => ({ ...item, distance: distanceKm(item.latitude, item.longitude) })).sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999));
+  return `<main class="page">${pageTitle('레저 추천', '인원과 나이대에 맞는 부산 바다 체험이에요.')}<div class="leisure-banner" id="weather-status">🌤️ 부산의 실시간 날씨와 파도를 불러오는 중이에요.</div><section class="filter-box"><div class="form-grid"><label class="field">참여 인원<select id="leisure-people">${[1,2,3,4].map((n) => `<option value="${n}" ${leisureFilter.people === String(n) ? 'selected' : ''}>${n === 4 ? '4명 이상' : `${n}명`}</option>`).join('')}</select></label><label class="field">나이대<select id="leisure-age">${['청소년', '성인', '가족', '모든 연령'].map((age) => `<option ${leisureFilter.age === age ? 'selected' : ''}>${age}</option>`).join('')}</select></label></div><button class="recommend" data-action="apply-leisure-filter">이 조건으로 추천받기</button></section><div>${filtered.map((item) => `<article class="leisure-card"><div class="card-top"><span class="tag">${item.type}</span><span class="stars">⭐ ${item.rating}</span></div><h3>${item.emoji} ${item.title}</h3><p class="muted">📍 ${item.place} · ${item.age} · ${leisureFilter.people}명 참여</p><div class="facts"><span>⏱ ${item.minutes}분</span><span>💳 ${won(item.cost)} (예시)</span>${item.distance !== null ? `<span>📍 약 ${item.distance.toFixed(1)}km</span>` : ''}</div>${leisureGuide(item)}<div class="card-actions"><button class="secondary" data-action="map">지도에서 보기</button><button class="start" data-action="booking" data-id="${item.id}">예약 체험하기</button></div></article>`).join('') || '<div class="empty">조건에 맞는 체험이 없어요.</div>'}</div></main>`;
 }
 
 function community() {
@@ -127,6 +146,79 @@ function reviewModal() {
   return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>후기 작성하기</h2><label class="field">체험한 활동<select id="review-activity"><option>광안리 SUP</option><option>송정 서핑</option><option>국립해양박물관</option><option>다대포 해변 산책</option><option>기타 부산 바다 체험</option></select></label><label class="field" style="margin-top:12px">제목<input id="review-title" maxlength="80" placeholder="후기 제목"></label><label class="field" style="margin-top:12px">별점<select id="review-rating"><option value="5">5점</option><option value="4">4점</option><option value="3">3점</option><option value="2">2점</option><option value="1">1점</option></select></label><label class="field" style="margin-top:12px">후기 내용<textarea id="review-body" maxlength="500" placeholder="다른 사람에게 도움이 될 경험을 적어 주세요."></textarea></label><button class="recommend" data-action="submit-review">후기 등록하기</button></section></div>`;
 }
 
+const defaultSeaPlaces = [
+  { name: '광안리 해수욕장', type: '해변', icon: '🏖', latitude: 35.1532, longitude: 129.1187 },
+  { name: '송정 해수욕장', type: '해변', icon: '🏖', latitude: 35.1785, longitude: 129.1995 },
+  { name: '광안리 SUP 체험', type: '바다 레저', icon: '🏄', latitude: 35.1532, longitude: 129.1187 },
+  { name: '송정 서핑 입문', type: '바다 레저', icon: '🏄', latitude: 35.1785, longitude: 129.1995 }
+];
+
+function addMapMarker(map, place) {
+  const marker = L.marker([place.latitude, place.longitude], {
+    icon: L.divIcon({ className: 'sea-pin', html: `<div style="font-size:25px;filter:drop-shadow(0 2px 2px #1238)">${place.icon}</div>`, iconSize: [30, 34], iconAnchor: [15, 30] })
+  }).addTo(map);
+  marker.bindPopup(`<b>${escapeHtml(place.name)}</b><br><span>${escapeHtml(place.type)}</span>`);
+}
+
+function initSeaMap() {
+  const container = document.querySelector('#nearby-map');
+  if (!container || !window.L) return;
+  const center = userPosition ? [userPosition.latitude, userPosition.longitude] : [35.1595, 129.1593];
+  seaMap = L.map('nearby-map', { zoomControl: true, scrollWheelZoom: true, tap: true }).setView(center, userPosition ? 14 : 11);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(seaMap);
+  if (userPosition) {
+    L.circleMarker(center, { radius: 9, color: '#fff', weight: 3, fillColor: '#ff8068', fillOpacity: 1 }).addTo(seaMap).bindPopup('<b>현재 위치</b>').openPopup();
+    loadNearbySeaPlaces(seaMap, userPosition);
+  } else {
+    defaultSeaPlaces.forEach((place) => addMapMarker(seaMap, place));
+  }
+}
+
+async function loadNearbySeaPlaces(map, position) {
+  const token = ++nearbyLoadToken;
+  const query = `[out:json][timeout:20];(nwr(around:3500,${position.latitude},${position.longitude})["natural"="beach"];nwr(around:3500,${position.latitude},${position.longitude})["amenity"="restaurant"];nwr(around:3500,${position.latitude},${position.longitude})["sport"~"surfing|sailing|scuba_diving|swimming|kayak|paddleboarding",i];nwr(around:3500,${position.latitude},${position.longitude})["leisure"~"marina|water_park",i];);out center 50;`;
+  try {
+    const response = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+    if (!response.ok) throw new Error('nearby places request failed');
+    const result = await response.json();
+    if (token !== nearbyLoadToken || map !== seaMap) return;
+    result.elements.forEach((item) => {
+      const latitude = item.lat ?? item.center?.lat;
+      const longitude = item.lon ?? item.center?.lon;
+      if (!latitude || !longitude) return;
+      const tags = item.tags || {};
+      const type = tags.natural === 'beach' ? '해변' : tags.amenity === 'restaurant' ? '주변 음식점' : '바다 레저';
+      const icon = type === '해변' ? '🏖' : type === '주변 음식점' ? '🍽' : '🏄';
+      addMapMarker(map, { name: tags.name || type, type, icon, latitude, longitude });
+    });
+  } catch (error) {
+    if (token === nearbyLoadToken) {
+      defaultSeaPlaces.forEach((place) => addMapMarker(map, place));
+      showToast('주변 장소 정보를 불러오지 못해 부산 기본 장소를 표시했어요.');
+    }
+  }
+}
+
+async function searchMapPlace() {
+  const input = document.querySelector('#map-search');
+  const keyword = input?.value.trim();
+  if (!keyword) return showToast('찾을 해변이나 지역 이름을 입력해 주세요.');
+  showToast('지도에서 장소를 찾고 있어요.');
+  try {
+    const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=kr&q=${encodeURIComponent(`부산 ${keyword}`)}`);
+    const places = await response.json();
+    if (!places.length || !seaMap) throw new Error('place not found');
+    const place = places[0];
+    const position = { latitude: Number(place.lat), longitude: Number(place.lon) };
+    seaMap.setView([position.latitude, position.longitude], 14);
+    L.marker([position.latitude, position.longitude]).addTo(seaMap).bindPopup(`<b>${escapeHtml(place.display_name.split(',')[0])}</b><br>검색한 장소`).openPopup();
+    loadNearbySeaPlaces(seaMap, position);
+    showToast('검색한 장소 주변의 바다 정보를 표시했어요.');
+  } catch {
+    showToast('장소를 찾지 못했어요. 부산 지역이나 해변 이름으로 다시 검색해 주세요.');
+  }
+}
+
 function bookingModal() {
   const item = bookingActivity;
   const people = Number(leisureFilter.people);
@@ -137,7 +229,9 @@ function bookingModal() {
 
 function render() {
   const pages = { home, missions, detail: missionDetail, leisure, community, profile, points };
+  if (seaMap) { seaMap.remove(); seaMap = null; }
   app.innerHTML = header() + pages[screen]() + navigation();
+  if (screen === 'home') setTimeout(initSeaMap, 0);
   if (screen === 'leisure') loadBusanWeather();
 }
 
@@ -211,9 +305,39 @@ async function loadBusanWeather() {
   } catch { target.textContent = '날씨 정보를 불러오지 못했어요. 현장 안전 안내를 확인해 주세요.'; }
 }
 
+function weatherSafetyMessage(temperature, wind, wave) {
+  if (wave >= 1.5) return '파도가 거셀 수 있으니 해안 가까이에서 활동하고, 수상 레저는 현장 안전 안내를 꼭 확인하세요.';
+  if (wind >= 25) return '바람이 강하니 모자와 물건이 날리지 않게 하고, 수상 활동은 운영 여부를 먼저 확인하세요.';
+  if (temperature >= 30) return '기온이 높아 모래와 시설물이 뜨거울 수 있으니 화상과 탈수에 주의하세요.';
+  if (temperature <= 8) return '기온이 낮으니 젖은 옷을 오래 입지 말고 방풍 옷을 준비하세요.';
+  return '날씨는 비교적 안정적이지만, 바다 활동 전 현장 안전 안내와 파도 상태를 다시 확인하세요.';
+}
+
+async function loadBusanWeather() {
+  const target = document.querySelector('#weather-status');
+  if (!target) return;
+  try {
+    const [weatherResponse, marineResponse] = await Promise.all([
+      fetch('https://api.open-meteo.com/v1/forecast?latitude=35.1796&longitude=129.0756&current=temperature_2m,weather_code,wind_speed_10m&timezone=Asia%2FSeoul'),
+      fetch('https://marine-api.open-meteo.com/v1/marine?latitude=35.1796&longitude=129.0756&current=wave_height&timezone=Asia%2FSeoul&cell_selection=sea')
+    ]);
+    if (!weatherResponse.ok || !marineResponse.ok) throw new Error('weather request failed');
+    const weather = await weatherResponse.json();
+    const marine = await marineResponse.json();
+    const temperature = weather.current.temperature_2m;
+    const wind = weather.current.wind_speed_10m;
+    const wave = marine.current?.wave_height ?? 0;
+    const clear = weather.current.weather_code <= 3;
+    target.innerHTML = `<span class="leisure-icon">${clear ? '🌤️' : '🌦️'}</span><strong>지금 부산 날씨: ${clear ? '맑음 또는 구름 조금' : '현장 날씨 확인 필요'}</strong><br>기온 ${temperature}℃ · 바람 ${wind}km/h · 파도 ${wave}m<br><b>오늘의 주의:</b> ${weatherSafetyMessage(temperature, wind, wave)}<br><small>날씨·파도 정보는 예보이며, 출발 전 현장 안전 안내를 확인하세요.</small>`;
+  } catch {
+    target.textContent = '날씨·파도 정보를 불러오지 못했어요. 출발 전 현장 안전 안내를 확인해 주세요.';
+  }
+}
+
 function requestLocation() {
   if (!navigator.geolocation) return showToast('이 브라우저에서는 위치 기능을 사용할 수 없어요.');
-  navigator.geolocation.getCurrentPosition((position) => { userPosition = { latitude: position.coords.latitude, longitude: position.coords.longitude }; screen = 'leisure'; render(); showToast('현재 위치 근처 순서로 추천했어요.'); }, () => showToast('위치 권한이 없어 광안리 기준으로 추천할게요.'), { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
+  showToast('현재 위치 권한을 요청하고 있어요.');
+  navigator.geolocation.getCurrentPosition((position) => { userPosition = { latitude: position.coords.latitude, longitude: position.coords.longitude }; screen = 'home'; render(); showToast('현재 위치 중심으로 바다 지도를 바꿨어요.'); }, () => showToast('위치 권한이 없어 부산 바다 기본 지도를 보여드려요.'), { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 });
 }
 
 app.addEventListener('click', async (event) => {
@@ -222,6 +346,7 @@ app.addEventListener('click', async (event) => {
   if (button.dataset.go) { screen = button.dataset.go; render(); if (screen === 'community') loadCommunityPosts(); return; }
   const action = button.dataset.action;
   if (action === 'location') requestLocation();
+  if (action === 'map-search') searchMapPlace();
   if (action === 'filter') { document.querySelectorAll('.chip').forEach((chip) => chip.classList.remove('active')); button.classList.add('active'); }
   if (action === 'place') { chosenPlace = data.places.find((p) => p.id === button.dataset.id); render(); }
   if (action === 'save') showToast('저장 목록 기능은 준비 중이에요.');
