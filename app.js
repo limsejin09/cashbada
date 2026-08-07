@@ -10,6 +10,8 @@ let chosenMission = null;
 let recommendations = data.missions.slice(0, 6);
 let missionDestination = 'all';
 let missionPlaceQuery = '';
+let dailyMissionDate = '';
+let dailyMissionIds = [];
 let leisureFilter = { people: '2', age: '청소년' };
 let userPosition = null;
 let mapFocus = null;
@@ -21,10 +23,10 @@ let seaMap = null;
 let nearbyLoadToken = 0;
 let missionMemories = [];
 let savedLeisureIds = [];
-let selectedMood = '😊';
+let selectedMood = '😄';
 let selectedWeather = '🌤️';
 let localPhotoClassifier = null;
-const APP_RELEASE = 14;
+const APP_RELEASE = 15;
 const APP_VERSION = `1.${String(APP_RELEASE).padStart(2, '0')}`;
 
 const won = (number) => number === 0 ? '무료' : `${number.toLocaleString()}원`;
@@ -32,6 +34,19 @@ const escapeHtml = (value = '') => String(value).replace(/[&<>'"]/g, (char) => (
 const usernameFromUser = (user) => user?.user_metadata?.username || user?.email?.split('@')[0] || '바다 친구';
 const isDemoUser = () => Boolean(currentUser?.isDemo);
 const formatDate = (value) => new Intl.DateTimeFormat('ko-KR', { month: 'short', day: 'numeric' }).format(new Date(value));
+const todayInKorea = () => {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+  const date = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
+  return `${date.year}-${date.month}-${date.day}`;
+};
+const resetDailyMissionsIfNeeded = () => {
+  const today = todayInKorea();
+  if (dailyMissionDate === today) return false;
+  dailyMissionDate = today;
+  dailyMissionIds = [];
+  return true;
+};
+const completedToday = (missionId) => { resetDailyMissionsIfNeeded(); return dailyMissionIds.includes(missionId); };
 const progressKey = () => currentUser ? `cashbada-progress-${currentUser.id}` : null;
 const leisureSaveKey = () => currentUser ? `cashbada-leisure-saves-${currentUser.id}` : null;
 const loadProgress = () => {
@@ -42,15 +57,21 @@ const loadProgress = () => {
     if (saved && Array.isArray(saved.completedMissionIds) && Number.isFinite(saved.points)) {
       data.currentUser.points = saved.points;
       data.currentUser.completedMissionIds = saved.completedMissionIds;
+      dailyMissionDate = saved.dailyMissionDate || todayInKorea();
+      dailyMissionIds = Array.isArray(saved.dailyMissionIds) ? saved.dailyMissionIds : [];
+      resetDailyMissionsIfNeeded();
     } else {
       data.currentUser.points = 0;
       data.currentUser.completedMissionIds = [];
+      dailyMissionDate = todayInKorea();
+      dailyMissionIds = [];
     }
-  } catch { data.currentUser.points = 0; data.currentUser.completedMissionIds = []; }
+  } catch { data.currentUser.points = 0; data.currentUser.completedMissionIds = []; dailyMissionDate = todayInKorea(); dailyMissionIds = []; }
 };
 const saveProgress = () => {
   const key = progressKey();
-  if (key) localStorage.setItem(key, JSON.stringify({ points: data.currentUser.points, completedMissionIds: data.currentUser.completedMissionIds }));
+  resetDailyMissionsIfNeeded();
+  if (key) localStorage.setItem(key, JSON.stringify({ points: data.currentUser.points, completedMissionIds: data.currentUser.completedMissionIds, dailyMissionDate, dailyMissionIds }));
   if (currentUser && !isDemoUser()) void syncProgressToCloud();
 };
 const loadSavedLeisure = () => {
@@ -93,7 +114,7 @@ function missionPhotoLabel(mission) {
 
 async function verifyPhotoOnDevice(photo, mission) {
   try {
-    showToast('무료 AI가 이 미션 기준으로 사진을 확인하는 중이에요…');
+    showToast('AI가 이 미션 기준으로 사진을 확인하는 중이에요…');
     if (!localPhotoClassifier) {
       const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1');
       localPhotoClassifier = await pipeline('zero-shot-image-classification', 'Xenova/clip-vit-base-patch32');
@@ -102,11 +123,11 @@ async function verifyPhotoOnDevice(photo, mission) {
     const results = await localPhotoClassifier(photo, [expected, 'an unrelated photo that does not show the mission activity']);
     const matched = results[0]?.label === expected && results[0]?.score >= 0.55;
     return matched
-      ? { approved: true, message: '무료 AI가 이 미션 활동과 관련된 사진으로 확인했어요.' }
-      : { approved: false, message: `무료 AI가 “${mission.title}” 미션과 사진의 관련성을 확인하기 어려워요. 미션 활동이나 장소가 더 잘 보이게 다시 찍어 주세요.` };
+      ? { approved: true, message: 'AI가 이 미션 활동과 관련된 사진으로 확인했어요.' }
+      : { approved: false, message: `AI가 “${mission.title}” 미션과 사진의 관련성을 확인하기 어려워요. 미션 활동이나 장소가 더 잘 보이게 다시 찍어 주세요.` };
   } catch (error) {
-    console.warn('무료 사진 AI 오류:', error);
-    return { approved: true, message: '무료 AI 모델을 불러오지 못해 사진 형식만 확인하고 진행했어요.' };
+    console.warn('사진 AI 오류:', error);
+    return { approved: true, message: 'AI 모델을 불러오지 못해 사진 형식만 확인하고 진행했어요.' };
   }
 }
 
@@ -160,29 +181,35 @@ async function supabaseRequest(path, options = {}) {
 const memoryForCloud = (memory) => ({
   missionId: memory.missionId, title: memory.title, date: memory.date,
   mood: memory.mood, weather: memory.weather, note: memory.note || '',
-  createdAt: memory.createdAt, hasPhoto: Boolean(memory.photo || memory.photoPath), photoPath: memory.photoPath || null
+  createdAt: memory.createdAt, hasPhoto: Boolean(memory.photo || memory.photoPath || memory.photos?.length || memory.photoPaths?.length),
+  photoPath: memory.photoPath || memory.photoPaths?.[0] || null, photoPaths: memory.photoPaths || []
 });
 
-async function uploadMissionPhoto(photo, missionId) {
+async function uploadMissionPhoto(photo, missionId, index = 0) {
   const extension = (photo.name.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
-  const photoPath = `${currentUser.id}/${missionId}-${Date.now()}.${extension}`;
+  const photoPath = `${currentUser.id}/${missionId}-${Date.now()}-${index + 1}.${extension}`;
   await supabaseRequest(`/storage/v1/object/mission-photos/${photoPath}`, {
     method: 'POST', body: photo, headers: { 'Content-Type': photo.type || 'image/jpeg', 'x-upsert': 'true' }
   });
   return photoPath;
 }
 
-async function loadMissionPhoto(memory) {
-  if (memory.photo || memory.photoUrl || !memory.photoPath) return;
-  const signed = await supabaseRequest(`/storage/v1/object/sign/mission-photos/${memory.photoPath}`, {
-    method: 'POST', body: JSON.stringify({ expiresIn: 3600 })
-  });
-  if (!signed?.signedURL) throw new Error('사진 주소를 만들지 못했어요.');
-  memory.photoUrl = `${supabaseSettings.url}/storage/v1${signed.signedURL}`;
+async function loadMissionPhotos(memory) {
+  const photoPaths = memory.photoPaths?.length ? memory.photoPaths : memory.photoPath ? [memory.photoPath] : [];
+  if (memory.photoUrls?.length || !photoPaths.length) return;
+  const signedPhotos = await Promise.all(photoPaths.map(async (photoPath) => {
+    const signed = await supabaseRequest(`/storage/v1/object/sign/mission-photos/${photoPath}`, {
+      method: 'POST', body: JSON.stringify({ expiresIn: 3600 })
+    });
+    if (!signed?.signedURL) throw new Error('사진 주소를 만들지 못했어요.');
+    return `${supabaseSettings.url}/storage/v1${signed.signedURL}`;
+  }));
+  memory.photoUrls = signedPhotos;
+  memory.photoUrl = signedPhotos[0] || null;
 }
 
 async function openMissionMemory(memory) {
-  try { await loadMissionPhoto(memory); } catch (error) { console.warn('사진 불러오기 오류:', error); }
+  try { await loadMissionPhotos(memory); } catch (error) { console.warn('사진 불러오기 오류:', error); }
   app.insertAdjacentHTML('beforeend', missionMemoryModal(memory));
 }
 
@@ -190,8 +217,13 @@ async function migrateLocalPhotosToCloud() {
   if (!currentUser || isDemoUser()) return;
   let migrated = false;
   for (const memory of missionMemories) {
-    if (!memory.photo || memory.photoPath) continue;
-    try { memory.photoPath = await uploadMissionPhoto(memory.photo, memory.missionId); migrated = true; } catch (error) { console.warn('기존 사진 이전 오류:', error); }
+    const photos = memory.photos?.length ? memory.photos : memory.photo ? [memory.photo] : [];
+    if (!photos.length || memory.photoPaths?.length || memory.photoPath) continue;
+    try {
+      memory.photoPaths = await Promise.all(photos.map((photo, index) => uploadMissionPhoto(photo, memory.missionId, index)));
+      memory.photoPath = memory.photoPaths[0];
+      migrated = true;
+    } catch (error) { console.warn('기존 사진 이전 오류:', error); }
   }
   if (migrated) await syncProgressToCloud();
 }
@@ -241,6 +273,8 @@ async function signOut() {
   currentUser = null;
   data.currentUser.points = 0;
   data.currentUser.completedMissionIds = [];
+  dailyMissionDate = todayInKorea();
+  dailyMissionIds = [];
   screen = 'home';
   render();
   showToast('로그아웃했어요.');
@@ -327,57 +361,69 @@ function placeCard() {
 }
 
 function home() {
-  const complete = data.currentUser.completedMissionIds.length;
+  resetDailyMissionsIfNeeded();
+  const complete = dailyMissionIds.length;
   return `<main class="page"><section class="hero"><span class="eyebrow">TODAY IN BUSAN</span><h1>바다를 즐기고<br><span>부산을 더 푸르게</span></h1><p>내 주변의 해양 미션을 발견하고<br>작은 행동으로 바다를 지켜보세요.</p><button class="primary" data-go="missions">오늘의 미션 6개 받기 <span>→</span></button></section><section class="status"><div><small>오늘의 미션</small><strong>${complete} / 6</strong></div><div class="progress"><i style="width:${Math.min(100, complete / 6 * 100)}%"></i></div><button class="link-btn" data-go="missions">진행 보기 →</button></section><section class="section-title"><div><span class="eyebrow">NEARBY SEA MAP</span><h2>${userPosition ? '내 주변 바다 지도' : '부산 바다 지도'}</h2></div><button class="circle-btn" data-action="location" aria-label="현재 위치 확인">⌖</button></section><button class="recommend" data-action="location" style="margin:0 0 14px">${userPosition ? '현재 위치로 지도 다시 맞추기' : '위치 허용하고 내 주변 바다 지도 보기'}</button><p class="muted" style="margin:-7px 0 14px">지도는 손가락/마우스로 이동하고 +, − 버튼으로 확대·축소할 수 있어요. 위치는 저장하지 않아요.</p><div class="search"><input id="map-search" aria-label="지도 장소 검색" placeholder="해변, 바다 레저, 지역을 검색하세요"><button data-action="map-search">찾기</button></div><div class="map-legend"><span>🏖 해변</span><span>🐟 해산물 음식점</span><span>☕ 바다 카페</span><span>🏄 레저·대여</span><span>🧰 용품점</span></div><section id="nearby-map" class="map" aria-label="현재 위치 기반 바다 지도"><span class="map-caption">${userPosition ? '내 위치 기준 주변 해양 정보' : '위치 허용 전: 부산 바다 기본 지도'}</span></section></main>`;
 }
 
 function missionCard(mission) {
-  const isDone = data.currentUser.completedMissionIds.includes(mission.id);
+  const isDone = completedToday(mission.id);
   return `<article class="mission-card"><div class="card-top"><span class="tag">${mission.category}</span><span class="tag eco">🌿 환경 기여 ${mission.ecoScore}/5</span></div><h3>${mission.title}</h3><p class="muted">📍 ${mission.location} · ${mission.distance}km</p><div class="facts"><span>⏱ ${mission.minutes}분</span><span>💳 ${won(mission.cost)}</span><span>🐚 ${mission.points}P</span><span>${mission.difficulty}</span></div><div class="card-actions"><button class="start" data-action="mission" data-id="${mission.id}">${isDone ? '완료 확인' : '시작하기'}</button></div></article>`;
 }
 
 function missions() {
+  resetDailyMissionsIfNeeded();
   const destinationOptions = [{ id: 'all', name: '대표 해안 권역 선택' }, { id: 'current', name: '현재 위치 근처' }, ...missionAreas].map((area) => `<option value="${area.id}" ${missionDestination === area.id ? 'selected' : ''}>${area.name}</option>`).join('');
-  return `<main class="page">${pageTitle('오늘의 미션', '목적지나 현재 위치 주변의 바다 미션만 추천해요.')}<section class="filter-box"><div class="form-grid"><label class="field full">미션 목적지<select id="mission-destination">${destinationOptions}</select></label><label class="field full">직접 입력<input id="mission-place-query" value="${escapeHtml(missionPlaceQuery)}" placeholder="예: 자갈치시장, 해운대, 송도"></label><label class="field">가능 시간<select id="time"><option value="30">30분</option><option value="90" selected>90분</option><option value="120">120분</option></select></label><label class="field">예산<select id="budget"><option value="0">0원</option><option value="20000" selected>2만원 이하</option><option value="50000">5만원 이하</option></select></label><label class="field full">관심 분야<select id="interest"><option value="전체">전체</option><option value="사진">사진</option><option value="환경">환경</option><option value="먹거리">먹거리</option><option value="레저">레저</option></select></label></div><p class="muted" style="margin:12px 0 0">직접 입력이 있으면 그 장소를 우선 적용해요. 현재 위치는 권한 허용 뒤에 사용할 수 있어요.</p><button class="recommend" data-action="recommend">이 주변 미션 추천받기</button></section><div>${recommendations.map(missionCard).join('') || '<div class="empty">이 주변에는 조건에 맞는 미션이 없어요. 시간·예산 조건을 넓히거나 다른 목적지를 골라 보세요.</div>'}</div></main>`;
+  return `<main class="page">${pageTitle('오늘의 미션', '목적지나 현재 위치 주변의 바다 미션만 추천해요.')}<section class="filter-box"><div class="notice" style="margin:0 0 14px">오늘 참여 ${dailyMissionIds.length} / 6개 · 매일 자정에 다시 0개로 시작해요.</div><div class="form-grid"><label class="field full">미션 목적지<select id="mission-destination">${destinationOptions}</select></label><label class="field full">직접 입력<input id="mission-place-query" value="${escapeHtml(missionPlaceQuery)}" placeholder="예: 자갈치시장, 해운대, 송도"></label><label class="field">예산<select id="budget"><option value="0">0원</option><option value="20000" selected>2만원 이하</option><option value="50000">5만원 이하</option></select></label><label class="field">관심 분야<select id="interest"><option value="전체">전체</option><option value="사진">사진</option><option value="환경">환경</option><option value="먹거리">먹거리</option><option value="레저">레저</option></select></label></div><p class="muted" style="margin:12px 0 0">직접 입력이 있으면 그 장소를 우선 적용해요. 현재 위치는 권한 허용 뒤에 사용할 수 있어요.</p><button class="recommend" data-action="recommend">이 주변 미션 추천받기</button></section><div>${recommendations.map(missionCard).join('') || '<div class="empty">이 주변에는 조건에 맞는 미션이 없어요. 예산 조건을 넓히거나 다른 목적지를 골라 보세요.</div>'}</div></main>`;
 }
 
 function missionDetail() {
   const m = chosenMission;
-  const done = data.currentUser.completedMissionIds.includes(m.id);
+  const done = completedToday(m.id);
   return `<main class="page">${pageTitle('미션 진행', '바다를 즐기며 환경도 지켜요.', 'missions')}<section class="mission-hero"><span class="tag">${m.category}</span><p class="big">${m.title}</p><div class="facts"><span>📍 ${m.location}</span><span>⏱ ${m.minutes}분</span><span>🐚 ${m.points}P</span></div><p class="muted">인증 방법: ${m.verification}</p></section><div class="notice">🛟 ${m.safety} 위험하면 보호자와 함께해 주세요.</div>${done ? '<div class="success" style="margin-top:16px">이미 완료한 미션입니다.</div>' : `<section class="verification"><b>미션 인증하기</b><p class="muted" style="margin-top:5px">프로토타입에서는 제출 즉시 완료 처리됩니다.</p><button class="recommend" data-action="complete" data-id="${m.id}">인증 제출하고 ${m.points}P 받기</button></section>`}</main>`;
 }
 
 function missionDetail() {
   const m = chosenMission;
-  const done = data.currentUser.completedMissionIds.includes(m.id);
+  const done = completedToday(m.id);
   const memory = missionMemories.find((item) => item.missionId === m.id);
   const today = new Date().toISOString().slice(0, 10);
-  const moodOptions = ['😊', '😆', '😌', '🥹', '💪'];
+  const moodOptions = [
+    ['😄', '완전 방긋'], ['🙂', '조금 방긋'], ['😢', '슬픔'],
+    ['😫', '피곤'], ['😍', '감동'], ['🔥', '열정']
+  ];
   const weatherOptions = ['☀️', '🌤️', '☁️', '🌦️', '🌬️'];
-  return `<main class="page">${pageTitle('미션 인증', '사진과 나만의 기록을 남겨 보세요.', 'missions')}<section class="mission-hero"><span class="tag">${m.category}</span><p class="big">${m.title}</p><div class="facts"><span>📍 ${m.location}</span><span>⏱ ${m.minutes}분</span><span>🐚 ${m.points}P</span></div><p class="muted">인증 방법: ${m.verification}</p></section><div class="notice">🛟 ${m.safety}</div>${done ? `<section class="success" style="margin-top:16px"><b>인증 완료한 미션이에요.</b><br>${memory ? `<button class="link-btn" data-action="memory-detail" data-id="${m.id}" style="margin-top:10px">내 사진과 감상평 다시 보기 →</button>` : ''}</section>` : `<section class="verification"><b>미션 사진 인증</b><p class="muted" style="margin-top:5px">사진은 필수이며, 사진 사용·저장 동의에 체크하지 않으면 미션에 참여할 수 없어요.</p><label class="field" style="margin-top:12px">인증 사진 (필수)<input id="mission-photo" type="file" accept="image/*"></label><label class="consent" style="margin-top:12px"><input id="photo-consent" type="checkbox"> <span>사진을 이 기기 브라우저에 저장하고, 무료 AI가 내 기기 안에서 바다 관련 사진인지 확인하는 것에 동의합니다. 동의하지 않으면 미션에 참여할 수 없습니다.</span></label><div class="notice" style="margin-top:12px">🤖 무료 AI는 사진을 외부 AI 서버로 보내지 않고 이 기기에서만 확인합니다. 처음 한 번은 모델을 받아와 시간이 조금 걸릴 수 있어요.</div><label class="field" style="margin-top:14px">기록 날짜<input id="memory-date" type="date" value="${today}"></label><div class="field" style="margin-top:14px">오늘의 기분<div class="chips">${moodOptions.map((emoji) => `<button type="button" class="chip ${emoji === selectedMood ? 'active' : ''}" data-action="mood" data-value="${emoji}">${emoji}</button>`).join('')}</div></div><div class="field" style="margin-top:8px">오늘의 날씨<div class="chips">${weatherOptions.map((emoji) => `<button type="button" class="chip ${emoji === selectedWeather ? 'active' : ''}" data-action="memory-weather" data-value="${emoji}">${emoji}</button>`).join('')}</div></div><label class="field" style="margin-top:8px">오늘의 바다 일기 (선택)<textarea id="memory-note" maxlength="500" placeholder="오늘 바다에서 느낀 점, 기억하고 싶은 순간을 적어 보세요."></textarea></label><button class="recommend" data-action="complete" data-id="${m.id}">사진으로 인증하고 ${m.points}P 받기</button></section>`}</main>`;
+  return `<main class="page">${pageTitle('미션 인증', '사진과 나만의 기록을 남겨 보세요.', 'missions')}<section class="mission-hero"><span class="tag">${m.category}</span><p class="big">${m.title}</p><div class="facts"><span>📍 ${m.location}</span><span>⏱ ${m.minutes}분</span><span>🐚 ${m.points}P</span></div><p class="muted">인증 방법: ${m.verification}</p></section><div class="notice">🛟 ${m.safety}</div>${done ? `<section class="success" style="margin-top:16px"><b>인증 완료한 미션이에요.</b><br>${memory ? `<button class="link-btn" data-action="memory-detail" data-id="${m.id}" style="margin-top:10px">내 사진과 감상평 다시 보기 →</button>` : ''}</section>` : `<section class="verification"><b>미션 사진 인증</b><p class="muted" style="margin-top:5px">사진은 1장 이상 필수이며, 최대 5장까지 추가할 수 있어요. 사진 사용·저장 동의에 체크하지 않으면 미션에 참여할 수 없어요.</p><label class="field" style="margin-top:12px">인증 사진 (1~5장)<input id="mission-photo" type="file" accept="image/*" multiple></label><label class="consent" style="margin-top:12px"><input id="photo-consent" type="checkbox"> <span>사진을 이 기기 브라우저에 저장하고, AI가 내 기기 안에서 바다 관련 사진인지 확인하는 것에 동의합니다. 동의하지 않으면 미션에 참여할 수 없습니다.</span></label><div class="notice" style="margin-top:12px">🤖 AI는 첫 번째 사진이 미션과 관련 있는지 확인합니다. 처음 한 번은 모델을 받아와 시간이 조금 걸릴 수 있어요.</div><label class="field" style="margin-top:14px">기록 날짜<input id="memory-date" type="date" value="${today}"></label><div class="field" style="margin-top:14px">오늘의 기분<div class="chips">${moodOptions.map(([emoji, label]) => `<button type="button" class="chip ${emoji === selectedMood ? 'active' : ''}" data-action="mood" data-value="${emoji}" title="${label}" aria-label="${label}">${emoji}</button>`).join('')}</div></div><div class="field" style="margin-top:8px">오늘의 날씨<div class="chips">${weatherOptions.map((emoji) => `<button type="button" class="chip ${emoji === selectedWeather ? 'active' : ''}" data-action="memory-weather" data-value="${emoji}">${emoji}</button>`).join('')}</div></div><label class="field" style="margin-top:8px">오늘의 바다 일기 (선택)<textarea id="memory-note" maxlength="500" placeholder="오늘 바다에서 느낀 점, 기억하고 싶은 순간을 적어 보세요."></textarea></label><button class="recommend" data-action="complete" data-id="${m.id}">사진으로 인증하고 ${m.points}P 받기</button></section>`}</main>`;
 }
 
 function missionMemoryModal(memory) {
-  const imageSource = memory.photoUrl || (memory.photo ? URL.createObjectURL(memory.photo) : '');
-  const photo = imageSource ? `<img src="${imageSource}" alt="미션 인증 사진" style="width:100%;max-height:320px;object-fit:cover;border-radius:16px;margin:16px 0">` : '<p class="muted" style="margin:16px 0">이 인증 사진은 아직 계정 보관함에 연결되지 않았어요.</p>';
-  return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>${escapeHtml(memory.title)}</h2><p class="muted">${memory.date} · ${memory.mood} 기분 · ${memory.weather} 날씨</p>${photo}<div class="notice"><b>나의 바다 일기</b><br>${escapeHtml(memory.note || '감상평을 남기지 않았어요.').replace(/\n/g, '<br>')}</div></section></div>`;
+  const sources = memory.photoUrls?.length ? memory.photoUrls : memory.photoUrl ? [memory.photoUrl] : memory.photos?.length ? memory.photos.map((photo) => URL.createObjectURL(photo)) : memory.photo ? [URL.createObjectURL(memory.photo)] : [];
+  const photos = sources.length ? `<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:16px 0">${sources.map((source, index) => `<img src="${source}" alt="미션 인증 사진 ${index + 1}" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:14px">`).join('')}</div>` : '<p class="muted" style="margin:16px 0">이 인증 사진은 아직 계정 보관함에 연결되지 않았어요.</p>';
+  return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>${escapeHtml(memory.title)}</h2><p class="muted">${memory.date} · ${memory.mood} 기분 · ${memory.weather} 날씨</p>${photos}<div class="notice"><b>나의 바다 일기</b><br>${escapeHtml(memory.note || '감상평을 남기지 않았어요.').replace(/\n/g, '<br>')}</div></section></div>`;
 }
 
 async function submitMissionVerification(mission) {
-  const photo = document.querySelector('#mission-photo')?.files?.[0];
+  resetDailyMissionsIfNeeded();
+  if (dailyMissionIds.length >= 6) return showToast('오늘은 미션 6개를 모두 참여했어요. 자정 이후에 다시 참여할 수 있어요.');
+  if (completedToday(mission.id)) return showToast('이 미션은 오늘 이미 인증했어요. 다른 미션을 골라 주세요.');
+  const photos = Array.from(document.querySelector('#mission-photo')?.files || []);
   const consent = document.querySelector('#photo-consent')?.checked;
   if (!consent) return showToast('사진 사용·저장 동의에 체크해야 미션에 참여할 수 있어요.');
-  if (!photo || !photo.type.startsWith('image/')) return showToast('미션 인증 사진을 꼭 선택해 주세요.');
-  const aiResult = await verifyPhotoOnDevice(photo, mission);
+  if (!photos.length || photos.some((photo) => !photo.type.startsWith('image/'))) return showToast('미션 인증 사진을 1장 이상 선택해 주세요.');
+  if (photos.length > 5) return showToast('인증 사진은 최대 5장까지 올릴 수 있어요.');
+  const aiResult = await verifyPhotoOnDevice(photos[0], mission);
   if (!aiResult.approved) return showToast(aiResult.message);
   showToast(aiResult.message);
-  let photoPath;
+  let photoPaths = [];
   if (!isDemoUser()) {
-    try { photoPath = await uploadMissionPhoto(photo, mission.id); } catch { return showToast('사진을 계정 보관함에 저장하지 못했어요. 인터넷 연결을 확인해 주세요.'); }
+    try { photoPaths = await Promise.all(photos.map((photo, index) => uploadMissionPhoto(photo, mission.id, index))); } catch { return showToast('사진을 계정 보관함에 저장하지 못했어요. 인터넷 연결을 확인해 주세요.'); }
   }
-  const memory = { missionId: mission.id, title: mission.title, photo, photoPath, date: document.querySelector('#memory-date').value, mood: selectedMood, weather: selectedWeather, note: document.querySelector('#memory-note').value.trim(), createdAt: new Date().toISOString() };
+  const memory = { missionId: mission.id, title: mission.title, photo: photos[0], photos, photoPath: photoPaths[0], photoPaths, date: document.querySelector('#memory-date').value, mood: selectedMood, weather: selectedWeather, note: document.querySelector('#memory-note').value.trim(), createdAt: new Date().toISOString() };
   try { await saveMissionMemory(memory); } catch { return showToast('사진 저장 공간이 부족해 인증하지 못했어요.'); }
-  if (!data.currentUser.completedMissionIds.includes(mission.id)) { data.currentUser.completedMissionIds.push(mission.id); data.currentUser.points += mission.points; saveProgress(); }
+  dailyMissionIds.push(mission.id);
+  if (!data.currentUser.completedMissionIds.includes(mission.id)) data.currentUser.completedMissionIds.push(mission.id);
+  data.currentUser.points += mission.points;
+  saveProgress();
   screen = 'profile';
   render();
   showToast('사진을 확인하고 미션 인증을 완료했어요!');
@@ -581,7 +627,7 @@ function bookingModal() {
 function render() {
   const pages = { home, missions, detail: missionDetail, leisure, community, profile, points };
   if (seaMap) { seaMap.remove(); seaMap = null; }
-  app.innerHTML = header() + pages[screen]() + navigation();
+  app.innerHTML = (header() + pages[screen]() + navigation()).replace(/🛟/g, '✓');
   if (screen === 'home') setTimeout(initSeaMap, 0);
   if (screen === 'leisure') loadBusanWeather();
 }
@@ -637,7 +683,6 @@ async function submitReview() {
 }
 
 function recommendMissions() {
-  const time = Number(document.querySelector('#time').value);
   const budget = Number(document.querySelector('#budget').value);
   const interest = document.querySelector('#interest').value;
   missionDestination = document.querySelector('#mission-destination').value;
@@ -650,7 +695,7 @@ function recommendMissions() {
   if (missionPlaceQuery && !selectedArea) return showToast('입력한 장소와 가까운 미션을 찾지 못했어요. 광안리, 해운대, 자갈치시장처럼 입력해 주세요.');
   if (missionDestination === 'current' && !userPosition && !missionPlaceQuery) return requestLocation();
   if (!selectedArea) return showToast('목적지나 현재 위치를 선택해 주세요.');
-  const candidates = data.missions.filter((m) => m.minutes <= time && m.cost <= budget && (interest === '전체' || m.category === interest));
+  const candidates = data.missions.filter((m) => m.cost <= budget && (interest === '전체' || m.category === interest));
   const nearby = candidates.map((mission) => {
     const area = missionAreaFor(mission);
     return { mission, distance: area ? coastDistanceKm(selectedArea, area) : Number.MAX_SAFE_INTEGER };
@@ -873,3 +918,9 @@ async function initialize() {
 }
 
 initialize();
+setInterval(() => {
+  if (!resetDailyMissionsIfNeeded()) return;
+  saveProgress();
+  render();
+  showToast('새로운 하루예요. 오늘의 미션 참여 수가 초기화됐어요!');
+}, 30000);
