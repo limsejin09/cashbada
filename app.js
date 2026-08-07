@@ -22,7 +22,7 @@ let savedLeisureIds = [];
 let selectedMood = '😊';
 let selectedWeather = '🌤️';
 let localPhotoClassifier = null;
-const APP_RELEASE = 10;
+const APP_RELEASE = 11;
 const APP_VERSION = `1.${String(APP_RELEASE).padStart(2, '0')}`;
 
 const won = (number) => number === 0 ? '무료' : `${number.toLocaleString()}원`;
@@ -467,7 +467,7 @@ function initSeaMap() {
 
 async function loadNearbySeaPlaces(map, position) {
   const token = ++nearbyLoadToken;
-  const query = `[out:json][timeout:25];(nwr(around:5000,${position.latitude},${position.longitude})["amenity"="cafe"];nwr(around:5000,${position.latitude},${position.longitude})["amenity"="restaurant"]["cuisine"~"seafood|fish|sushi",i];nwr(around:5000,${position.latitude},${position.longitude})["amenity"="restaurant"]["name"~"횟집|회센터|수산|활어|해산물|조개|대게",i];);out center 180;`;
+  const query = `[out:json][timeout:25];nwr(around:8000,${position.latitude},${position.longitude})["natural"~"beach|coastline",i]->.beaches;(nwr(around.beaches:1200)["amenity"="cafe"];nwr(around.beaches:1200)["amenity"="restaurant"]["cuisine"~"seafood|fish|sushi",i];nwr(around.beaches:1200)["amenity"="restaurant"]["name"~"횟집|회센터|수산|활어|해산물|조개|대게",i];);out center 180;`;
   try {
     const response = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
     if (!response.ok) throw new Error('nearby places request failed');
