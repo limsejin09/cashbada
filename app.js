@@ -42,6 +42,7 @@ const loadProgress = () => {
 const saveProgress = () => {
   const key = progressKey();
   if (key) localStorage.setItem(key, JSON.stringify({ points: data.currentUser.points, completedMissionIds: data.currentUser.completedMissionIds }));
+  if (currentUser) void syncProgressToCloud();
 };
 const showToast = (message) => {
   toast.textContent = message;
@@ -65,7 +66,7 @@ async function supabaseRequest(path, options = {}) {
   const session = getStoredSession();
   const headers = {
     apikey: supabaseSettings.publishableKey,
-    'Content-Type': 'application/json',
+    ...(options.body instanceof Blob ? {} : { 'Content-Type': 'application/json' }),
     ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
     ...(options.headers || {})
   };
@@ -73,6 +74,90 @@ async function supabaseRequest(path, options = {}) {
   const body = response.status === 204 ? null : await response.json().catch(() => null);
   if (!response.ok) throw new Error(body?.msg || body?.message || '서버 연결에 실패했어요.');
   return body;
+}
+
+const memoryForCloud = (memory) => ({
+  missionId: memory.missionId, title: memory.title, date: memory.date,
+  mood: memory.mood, weather: memory.weather, note: memory.note || '',
+  createdAt: memory.createdAt, hasPhoto: Boolean(memory.photo || memory.photoPath), photoPath: memory.photoPath || null
+});
+
+async function uploadMissionPhoto(photo, missionId) {
+  const extension = (photo.name.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
+  const photoPath = `${currentUser.id}/${missionId}-${Date.now()}.${extension}`;
+  await supabaseRequest(`/storage/v1/object/mission-photos/${photoPath}`, {
+    method: 'POST', body: photo, headers: { 'Content-Type': photo.type || 'image/jpeg', 'x-upsert': 'true' }
+  });
+  return photoPath;
+}
+
+async function loadMissionPhoto(memory) {
+  if (memory.photo || !memory.photoPath) return;
+  const response = await fetch(`${supabaseSettings.url}/storage/v1/object/mission-photos/${memory.photoPath}`, {
+    headers: { apikey: supabaseSettings.publishableKey, Authorization: `Bearer ${getStoredSession()?.access_token}` }
+  });
+  if (!response.ok) throw new Error('사진을 불러오지 못했어요.');
+  memory.photo = await response.blob();
+}
+
+async function openMissionMemory(memory) {
+  try { await loadMissionPhoto(memory); } catch (error) { console.warn('사진 불러오기 오류:', error); }
+  app.insertAdjacentHTML('beforeend', missionMemoryModal(memory));
+}
+
+async function migrateLocalPhotosToCloud() {
+  if (!currentUser) return;
+  let migrated = false;
+  for (const memory of missionMemories) {
+    if (!memory.photo || memory.photoPath) continue;
+    try { memory.photoPath = await uploadMissionPhoto(memory.photo, memory.missionId); migrated = true; } catch (error) { console.warn('기존 사진 이전 오류:', error); }
+  }
+  if (migrated) await syncProgressToCloud();
+}
+
+async function syncProgressToCloud() {
+  if (!currentUser) return;
+  try {
+    await supabaseRequest('/rest/v1/user_progress', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        user_id: currentUser.id,
+        points: data.currentUser.points,
+        completed_mission_ids: data.currentUser.completedMissionIds,
+        mission_memories: missionMemories.map(memoryForCloud),
+        updated_at: new Date().toISOString()
+      })
+    });
+  } catch (error) { console.warn('기록 동기화 오류:', error); }
+}
+
+async function loadCloudProgress() {
+  if (!currentUser) return;
+  try {
+    const rows = await supabaseRequest(`/rest/v1/user_progress?user_id=eq.${encodeURIComponent(currentUser.id)}&select=points,completed_mission_ids,mission_memories`);
+    const saved = rows?.[0];
+    if (!saved) return void syncProgressToCloud();
+    data.currentUser.points = Number.isFinite(saved.points) ? saved.points : 0;
+    data.currentUser.completedMissionIds = Array.isArray(saved.completed_mission_ids) ? saved.completed_mission_ids : [];
+    const localByMission = new Map(missionMemories.map((memory) => [memory.missionId, memory]));
+    const remoteMemories = Array.isArray(saved.mission_memories) ? saved.mission_memories : [];
+    const remoteIds = new Set(remoteMemories.map((memory) => memory.missionId));
+    missionMemories = [...remoteMemories.map((memory) => ({ ...memory, ...(localByMission.get(memory.missionId) || {}) })), ...missionMemories.filter((memory) => !remoteIds.has(memory.missionId))];
+    saveProgress();
+  } catch (error) { console.warn('기록 불러오기 오류:', error); }
+}
+
+async function signOut() {
+  // 서버 연결에 실패해도 이 기기에 남은 로그인 정보는 반드시 지웁니다.
+  try { await supabaseRequest('/auth/v1/logout', { method: 'POST' }); } catch (error) { console.warn('서버 로그아웃 처리:', error); }
+  clearSession();
+  currentUser = null;
+  data.currentUser.points = 0;
+  data.currentUser.completedMissionIds = [];
+  screen = 'home';
+  render();
+  showToast('로그아웃했어요.');
 }
 
 async function openAuthModal() {
@@ -108,6 +193,7 @@ async function saveMissionMemory(memory) {
   await new Promise((resolve, reject) => { transaction.oncomplete = resolve; transaction.onerror = () => reject(transaction.error); });
   missionMemories = missionMemories.filter((item) => item.missionId !== memory.missionId);
   missionMemories.unshift(memory);
+  if (currentUser) void syncProgressToCloud();
 }
 
 window.addEventListener('error', (event) => {
@@ -185,8 +271,8 @@ function missionDetail() {
 }
 
 function missionMemoryModal(memory) {
-  const imageUrl = URL.createObjectURL(memory.photo);
-  return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>${escapeHtml(memory.title)}</h2><p class="muted">${memory.date} · ${memory.mood} 기분 · ${memory.weather} 날씨</p><img src="${imageUrl}" alt="미션 인증 사진" style="width:100%;max-height:320px;object-fit:cover;border-radius:16px;margin:16px 0"><div class="notice"><b>나의 바다 일기</b><br>${escapeHtml(memory.note || '감상평을 남기지 않았어요.').replace(/\n/g, '<br>')}</div></section></div>`;
+  const photo = memory.photo ? `<img src="${URL.createObjectURL(memory.photo)}" alt="미션 인증 사진" style="width:100%;max-height:320px;object-fit:cover;border-radius:16px;margin:16px 0">` : '<p class="muted" style="margin:16px 0">이 기기에는 인증 사진이 저장되어 있지 않아요. 기록 내용은 계정에 안전하게 연결되어 있습니다.</p>';
+  return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>${escapeHtml(memory.title)}</h2><p class="muted">${memory.date} · ${memory.mood} 기분 · ${memory.weather} 날씨</p>${photo}<div class="notice"><b>나의 바다 일기</b><br>${escapeHtml(memory.note || '감상평을 남기지 않았어요.').replace(/\n/g, '<br>')}</div></section></div>`;
 }
 
 async function submitMissionVerification(mission) {
@@ -194,7 +280,9 @@ async function submitMissionVerification(mission) {
   const consent = document.querySelector('#photo-consent')?.checked;
   if (!consent) return showToast('사진 사용·저장 동의에 체크해야 미션에 참여할 수 있어요.');
   if (!photo || !photo.type.startsWith('image/')) return showToast('미션 인증 사진을 꼭 선택해 주세요.');
-  const memory = { missionId: mission.id, title: mission.title, photo, date: document.querySelector('#memory-date').value, mood: selectedMood, weather: selectedWeather, note: document.querySelector('#memory-note').value.trim(), createdAt: new Date().toISOString() };
+  let photoPath;
+  try { photoPath = await uploadMissionPhoto(photo, mission.id); } catch { return showToast('사진을 계정 보관함에 저장하지 못했어요. 인터넷 연결을 확인해 주세요.'); }
+  const memory = { missionId: mission.id, title: mission.title, photo, photoPath, date: document.querySelector('#memory-date').value, mood: selectedMood, weather: selectedWeather, note: document.querySelector('#memory-note').value.trim(), createdAt: new Date().toISOString() };
   try { await saveMissionMemory(memory); } catch { return showToast('사진 저장 공간이 부족해 인증하지 못했어요.'); }
   if (!data.currentUser.completedMissionIds.includes(mission.id)) { data.currentUser.completedMissionIds.push(mission.id); data.currentUser.points += mission.points; saveProgress(); }
   screen = 'profile';
@@ -234,7 +322,7 @@ function profile() {
     const memory = missionMemories.find((item) => item.missionId === mission.id);
     return `<article class="point-card ${memory ? 'memory-card' : ''}" ${memory ? `data-action="memory-detail" data-id="${mission.id}"` : ''}><b>${mission.title}</b><p class="muted" style="margin-top:5px">${memory ? `${memory.date} · ${memory.mood} ${memory.weather} · 사진과 일기가 있어요` : '미션 인증 완료'}</p><strong style="display:block;color:#13835c;margin-top:9px">+ ${mission.points}P</strong>${memory ? '<small style="display:block;margin-top:9px;color:#08789a">눌러서 추억 다시 보기 →</small>' : ''}</article>`;
   }).join('') || '<div class="empty">아직 완료한 미션이 없어요.</div>';
-  return `<main class="page"><section class="profile-hero"><div class="avatar">🌊</div><h2>${escapeHtml(usernameFromUser(currentUser))}</h2><p>부산 바다를 지키는 오늘의 여행가</p><div class="profile-points">${data.currentUser.points.toLocaleString()} P</div></section><section class="section-title"><div><span class="eyebrow">MY SEA MEMORY</span><h2>미션 인증 내역</h2></div></section>${records}</main>`;
+  return `<main class="page"><section class="profile-hero"><div class="avatar">🌊</div><h2>${escapeHtml(usernameFromUser(currentUser))}</h2><p>부산 바다를 지키는 오늘의 여행가</p><div class="profile-points">${data.currentUser.points.toLocaleString()} P</div></section><section class="section-title"><div><span class="eyebrow">MY SEA MEMORY</span><h2>미션 인증 내역</h2></div></section>${records}<div class="menu-list" style="margin-top:18px"><button class="menu-row" data-action="signout">로그아웃 <span>→</span></button></div></main>`;
 }
 
 function points() { return `<main class="page">${pageTitle('포인트 내역', '미션 완료 때 포인트가 쌓여요.', 'profile')}<section class="profile-hero"><p>현재 보유 포인트</p><div class="profile-points">${data.currentUser.points.toLocaleString()} P</div></section></main>`; }
@@ -458,7 +546,7 @@ app.addEventListener('click', async (event) => {
   if (action === 'complete') { if (!currentUser) { showToast('미션 인증을 저장하려면 먼저 로그인해 주세요.'); await openAuthModal(); return; } const m = data.missions.find((item) => item.id === button.dataset.id); await submitMissionVerification(m); }
   if (action === 'mood') { selectedMood = button.dataset.value; document.querySelectorAll('[data-action="mood"]').forEach((item) => item.classList.toggle('active', item.dataset.value === selectedMood)); }
   if (action === 'memory-weather') { selectedWeather = button.dataset.value; document.querySelectorAll('[data-action="memory-weather"]').forEach((item) => item.classList.toggle('active', item.dataset.value === selectedWeather)); }
-  if (action === 'memory-detail') { const memory = missionMemories.find((item) => item.missionId === button.dataset.id); if (memory) app.insertAdjacentHTML('beforeend', missionMemoryModal(memory)); }
+  if (action === 'memory-detail') { const memory = missionMemories.find((item) => item.missionId === button.dataset.id); if (memory) await openMissionMemory(memory); }
   if (action === 'apply-leisure-filter') { leisureFilter = { people: document.querySelector('#leisure-people').value, age: document.querySelector('#leisure-age').value }; render(); }
   if (action === 'map' || action === 'inquiry') showToast('프로토타입에서는 예시 안내를 보여줍니다.');
   if (action === 'booking') {
@@ -467,7 +555,10 @@ app.addEventListener('click', async (event) => {
     app.insertAdjacentHTML('beforeend', bookingModal());
   }
   if (action === 'auth-form') openAuthModal();
-  if (action === 'review-form') app.insertAdjacentHTML('beforeend', reviewModal());
+  if (action === 'review-form') {
+    if (!currentUser) { showToast('후기를 작성하려면 먼저 로그인해 주세요.'); await openAuthModal(); return; }
+    app.insertAdjacentHTML('beforeend', reviewModal());
+  }
   if (action === 'close') document.querySelector('.modal')?.remove();
   if (action === 'signup') submitAuth('signup');
   if (action === 'signin') submitAuth('signin');
@@ -483,7 +574,7 @@ app.addEventListener('click', async (event) => {
     render();
     showToast(`예약 체험 완료! ${points.toLocaleString()}P 할인 적용 (결제는 진행되지 않았어요).`);
   }
-  if (action === 'signout') { clearSession(); currentUser = null; screen = 'home'; render(); showToast('로그아웃했어요.'); }
+  if (action === 'signout') await signOut();
 });
 
 async function loadCommunityPosts() {
@@ -510,6 +601,9 @@ async function submitAuth(type) {
     saveSession(result);
     currentUser = result.user;
     loadProgress();
+    await loadMissionMemories();
+    await loadCloudProgress();
+    await migrateLocalPhotosToCloud();
     document.querySelector('.modal')?.remove();
     screen = 'profile';
     render();
@@ -522,13 +616,15 @@ async function submitAuth(type) {
 }
 
 async function submitReview() {
+  if (!currentUser) return showToast('후기를 작성하려면 먼저 로그인해 주세요.');
   const activity = document.querySelector('#review-activity')?.value;
   const title = document.querySelector('#review-title')?.value.trim();
   const body = document.querySelector('#review-body')?.value.trim();
   const rating = Number(document.querySelector('#review-rating')?.value);
   if (!title || !body) return showToast('제목과 후기 내용을 모두 입력해 주세요.');
   try {
-    await supabaseRequest('/rest/v1/community_posts', { method: 'POST', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ user_id: currentUser.id, author: usernameFromUser(currentUser), activity, title, rating, body }) });
+    const saved = await supabaseRequest('/rest/v1/community_posts', { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ user_id: currentUser.id, author: usernameFromUser(currentUser), activity, title, rating, body }) });
+    if (!Array.isArray(saved) || !saved[0]?.id) throw new Error('후기 저장 확인에 실패했어요.');
     document.querySelector('.modal')?.remove();
     screen = 'community';
     await loadCommunityPosts();
@@ -552,6 +648,8 @@ async function initialize() {
   currentUser = getStoredSession()?.user || null;
   loadProgress();
   await loadMissionMemories();
+  await loadCloudProgress();
+  await migrateLocalPhotosToCloud();
   render();
 }
 
