@@ -17,14 +17,17 @@ let toastTimer;
 let seaMap = null;
 let nearbyLoadToken = 0;
 let missionMemories = [];
+let savedLeisureIds = [];
 let selectedMood = '😊';
 let selectedWeather = '🌤️';
+let localPhotoClassifier = null;
 
 const won = (number) => number === 0 ? '무료' : `${number.toLocaleString()}원`;
 const escapeHtml = (value = '') => String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
 const usernameFromUser = (user) => user?.user_metadata?.username || user?.email?.split('@')[0] || '바다 친구';
 const formatDate = (value) => new Intl.DateTimeFormat('ko-KR', { month: 'short', day: 'numeric' }).format(new Date(value));
 const progressKey = () => currentUser ? `cashbada-progress-${currentUser.id}` : null;
+const leisureSaveKey = () => currentUser ? `cashbada-leisure-saves-${currentUser.id}` : null;
 const loadProgress = () => {
   const key = progressKey();
   if (!key) return;
@@ -44,6 +47,16 @@ const saveProgress = () => {
   if (key) localStorage.setItem(key, JSON.stringify({ points: data.currentUser.points, completedMissionIds: data.currentUser.completedMissionIds }));
   if (currentUser) void syncProgressToCloud();
 };
+const loadSavedLeisure = () => {
+  const key = leisureSaveKey();
+  if (!key) return savedLeisureIds = [];
+  try { savedLeisureIds = JSON.parse(localStorage.getItem(key) || '[]'); } catch { savedLeisureIds = []; }
+};
+const saveSavedLeisure = () => {
+  const key = leisureSaveKey();
+  if (key) localStorage.setItem(key, JSON.stringify(savedLeisureIds));
+  if (currentUser) void syncProgressToCloud();
+};
 const showToast = (message) => {
   toast.textContent = message;
   toast.classList.add('show');
@@ -54,6 +67,41 @@ const showToast = (message) => {
 async function ensureSupabase() {
   // 화면을 열 때 로그인 서버에 접속하지 않고, 로그인 버튼을 누른 순간에만 요청합니다.
   return true;
+}
+
+function missionPhotoLabel(mission) {
+  const title = mission.title;
+  if (title.includes('쓰레기') || title.includes('분리수거')) return 'a person picking up litter or recycling at a beach';
+  if (title.includes('다회용') || title.includes('비닐 없이') || title.includes('물 아껴')) return 'an eco-friendly reusable item near the sea or a market';
+  if (title.includes('수산물') || title.includes('멸치') || title.includes('간식')) return 'Korean seafood or local food at a market';
+  if (title.includes('엽서') || title.includes('책')) return 'a postcard or a book related to the sea';
+  if (title.includes('케이블카')) return 'a cable car with an ocean view';
+  if (title.includes('광안대교') || title.includes('야경')) return 'a bridge by the sea or a night harbor view';
+  if (title.includes('등대')) return 'a lighthouse by the sea';
+  if (title.includes('생물') || title.includes('조개')) return 'a sea creature, seashell, or coastal nature';
+  if (title.includes('안전') || title.includes('표지판') || title.includes('예절') || title.includes('준비물')) return 'a beach safety sign, safety guide, or water sports equipment';
+  if (title.includes('노을')) return 'a sunset at a beach';
+  if (title.includes('산책') || title.includes('해안길')) return 'a person walking on a coastal trail';
+  return 'a photograph of the ocean, beach, or a marine tourism activity';
+}
+
+async function verifyPhotoOnDevice(photo, mission) {
+  try {
+    showToast('무료 AI가 이 미션 기준으로 사진을 확인하는 중이에요…');
+    if (!localPhotoClassifier) {
+      const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1');
+      localPhotoClassifier = await pipeline('zero-shot-image-classification', 'Xenova/clip-vit-base-patch32');
+    }
+    const expected = missionPhotoLabel(mission);
+    const results = await localPhotoClassifier(photo, [expected, 'an unrelated photo that does not show the mission activity']);
+    const matched = results[0]?.label === expected && results[0]?.score >= 0.55;
+    return matched
+      ? { approved: true, message: '무료 AI가 이 미션 활동과 관련된 사진으로 확인했어요.' }
+      : { approved: false, message: `무료 AI가 “${mission.title}” 미션과 사진의 관련성을 확인하기 어려워요. 미션 활동이나 장소가 더 잘 보이게 다시 찍어 주세요.` };
+  } catch (error) {
+    console.warn('무료 사진 AI 오류:', error);
+    return { approved: true, message: '무료 AI 모델을 불러오지 못해 사진 형식만 확인하고 진행했어요.' };
+  }
 }
 
 const sessionStorageKey = 'cashbada-login-session';
@@ -125,6 +173,7 @@ async function syncProgressToCloud() {
         user_id: currentUser.id,
         points: data.currentUser.points,
         completed_mission_ids: data.currentUser.completedMissionIds,
+        saved_leisure_ids: savedLeisureIds,
         mission_memories: missionMemories.map(memoryForCloud),
         updated_at: new Date().toISOString()
       })
@@ -135,11 +184,13 @@ async function syncProgressToCloud() {
 async function loadCloudProgress() {
   if (!currentUser) return;
   try {
-    const rows = await supabaseRequest(`/rest/v1/user_progress?user_id=eq.${encodeURIComponent(currentUser.id)}&select=points,completed_mission_ids,mission_memories`);
+    const rows = await supabaseRequest(`/rest/v1/user_progress?user_id=eq.${encodeURIComponent(currentUser.id)}&select=points,completed_mission_ids,mission_memories,saved_leisure_ids`);
     const saved = rows?.[0];
     if (!saved) return void syncProgressToCloud();
     data.currentUser.points = Number.isFinite(saved.points) ? saved.points : 0;
     data.currentUser.completedMissionIds = Array.isArray(saved.completed_mission_ids) ? saved.completed_mission_ids : [];
+    savedLeisureIds = Array.isArray(saved.saved_leisure_ids) ? saved.saved_leisure_ids : [];
+    saveSavedLeisure();
     const localByMission = new Map(missionMemories.map((memory) => [memory.missionId, memory]));
     const remoteMemories = Array.isArray(saved.mission_memories) ? saved.mission_memories : [];
     const remoteIds = new Set(remoteMemories.map((memory) => memory.missionId));
@@ -247,7 +298,7 @@ function home() {
 
 function missionCard(mission) {
   const isDone = data.currentUser.completedMissionIds.includes(mission.id);
-  return `<article class="mission-card"><div class="card-top"><span class="tag">${mission.category}</span><span class="tag eco">🌿 환경 기여 ${mission.ecoScore}/5</span></div><h3>${mission.title}</h3><p class="muted">📍 ${mission.location} · ${mission.distance}km</p><div class="facts"><span>⏱ ${mission.minutes}분</span><span>💳 ${won(mission.cost)}</span><span>🐚 ${mission.points}P</span><span>${mission.difficulty}</span></div><div class="card-actions"><button class="save" data-action="save" aria-label="미션 저장">♡</button><button class="start" data-action="mission" data-id="${mission.id}">${isDone ? '완료 확인' : '시작하기'}</button></div></article>`;
+  return `<article class="mission-card"><div class="card-top"><span class="tag">${mission.category}</span><span class="tag eco">🌿 환경 기여 ${mission.ecoScore}/5</span></div><h3>${mission.title}</h3><p class="muted">📍 ${mission.location} · ${mission.distance}km</p><div class="facts"><span>⏱ ${mission.minutes}분</span><span>💳 ${won(mission.cost)}</span><span>🐚 ${mission.points}P</span><span>${mission.difficulty}</span></div><div class="card-actions"><button class="start" data-action="mission" data-id="${mission.id}">${isDone ? '완료 확인' : '시작하기'}</button></div></article>`;
 }
 
 function missions() {
@@ -267,7 +318,7 @@ function missionDetail() {
   const today = new Date().toISOString().slice(0, 10);
   const moodOptions = ['😊', '😆', '😌', '🥹', '💪'];
   const weatherOptions = ['☀️', '🌤️', '☁️', '🌦️', '🌬️'];
-  return `<main class="page">${pageTitle('미션 인증', '사진과 나만의 기록을 남겨 보세요.', 'missions')}<section class="mission-hero"><span class="tag">${m.category}</span><p class="big">${m.title}</p><div class="facts"><span>📍 ${m.location}</span><span>⏱ ${m.minutes}분</span><span>🐚 ${m.points}P</span></div><p class="muted">인증 방법: ${m.verification}</p></section><div class="notice">🛟 ${m.safety}</div>${done ? `<section class="success" style="margin-top:16px"><b>인증 완료한 미션이에요.</b><br>${memory ? `<button class="link-btn" data-action="memory-detail" data-id="${m.id}" style="margin-top:10px">내 사진과 감상평 다시 보기 →</button>` : ''}</section>` : `<section class="verification"><b>미션 사진 인증</b><p class="muted" style="margin-top:5px">사진은 필수이며, 사진 사용·저장 동의에 체크하지 않으면 미션에 참여할 수 없어요.</p><label class="field" style="margin-top:12px">인증 사진 (필수)<input id="mission-photo" type="file" accept="image/*"></label><label class="consent" style="margin-top:12px"><input id="photo-consent" type="checkbox"> <span>사진을 이 기기 브라우저에 저장하고 미션 인증에 사용하는 것에 동의합니다. 동의하지 않으면 미션에 참여할 수 없습니다.</span></label><div class="notice" style="margin-top:12px">🤖 AI 사진 확인은 서버용 AI 설정이 연결되면 사진 내용을 판단합니다. 현재는 사진 파일이 제출됐는지 먼저 확인하는 프로토타입 단계입니다.</div><label class="field" style="margin-top:14px">기록 날짜<input id="memory-date" type="date" value="${today}"></label><div class="field" style="margin-top:14px">오늘의 기분<div class="chips">${moodOptions.map((emoji) => `<button type="button" class="chip ${emoji === selectedMood ? 'active' : ''}" data-action="mood" data-value="${emoji}">${emoji}</button>`).join('')}</div></div><div class="field" style="margin-top:8px">오늘의 날씨<div class="chips">${weatherOptions.map((emoji) => `<button type="button" class="chip ${emoji === selectedWeather ? 'active' : ''}" data-action="memory-weather" data-value="${emoji}">${emoji}</button>`).join('')}</div></div><label class="field" style="margin-top:8px">오늘의 바다 일기 (선택)<textarea id="memory-note" maxlength="500" placeholder="오늘 바다에서 느낀 점, 기억하고 싶은 순간을 적어 보세요."></textarea></label><button class="recommend" data-action="complete" data-id="${m.id}">사진으로 인증하고 ${m.points}P 받기</button></section>`}</main>`;
+  return `<main class="page">${pageTitle('미션 인증', '사진과 나만의 기록을 남겨 보세요.', 'missions')}<section class="mission-hero"><span class="tag">${m.category}</span><p class="big">${m.title}</p><div class="facts"><span>📍 ${m.location}</span><span>⏱ ${m.minutes}분</span><span>🐚 ${m.points}P</span></div><p class="muted">인증 방법: ${m.verification}</p></section><div class="notice">🛟 ${m.safety}</div>${done ? `<section class="success" style="margin-top:16px"><b>인증 완료한 미션이에요.</b><br>${memory ? `<button class="link-btn" data-action="memory-detail" data-id="${m.id}" style="margin-top:10px">내 사진과 감상평 다시 보기 →</button>` : ''}</section>` : `<section class="verification"><b>미션 사진 인증</b><p class="muted" style="margin-top:5px">사진은 필수이며, 사진 사용·저장 동의에 체크하지 않으면 미션에 참여할 수 없어요.</p><label class="field" style="margin-top:12px">인증 사진 (필수)<input id="mission-photo" type="file" accept="image/*"></label><label class="consent" style="margin-top:12px"><input id="photo-consent" type="checkbox"> <span>사진을 이 기기 브라우저에 저장하고, 무료 AI가 내 기기 안에서 바다 관련 사진인지 확인하는 것에 동의합니다. 동의하지 않으면 미션에 참여할 수 없습니다.</span></label><div class="notice" style="margin-top:12px">🤖 무료 AI는 사진을 외부 AI 서버로 보내지 않고 이 기기에서만 확인합니다. 처음 한 번은 모델을 받아와 시간이 조금 걸릴 수 있어요.</div><label class="field" style="margin-top:14px">기록 날짜<input id="memory-date" type="date" value="${today}"></label><div class="field" style="margin-top:14px">오늘의 기분<div class="chips">${moodOptions.map((emoji) => `<button type="button" class="chip ${emoji === selectedMood ? 'active' : ''}" data-action="mood" data-value="${emoji}">${emoji}</button>`).join('')}</div></div><div class="field" style="margin-top:8px">오늘의 날씨<div class="chips">${weatherOptions.map((emoji) => `<button type="button" class="chip ${emoji === selectedWeather ? 'active' : ''}" data-action="memory-weather" data-value="${emoji}">${emoji}</button>`).join('')}</div></div><label class="field" style="margin-top:8px">오늘의 바다 일기 (선택)<textarea id="memory-note" maxlength="500" placeholder="오늘 바다에서 느낀 점, 기억하고 싶은 순간을 적어 보세요."></textarea></label><button class="recommend" data-action="complete" data-id="${m.id}">사진으로 인증하고 ${m.points}P 받기</button></section>`}</main>`;
 }
 
 function missionMemoryModal(memory) {
@@ -281,6 +332,9 @@ async function submitMissionVerification(mission) {
   const consent = document.querySelector('#photo-consent')?.checked;
   if (!consent) return showToast('사진 사용·저장 동의에 체크해야 미션에 참여할 수 있어요.');
   if (!photo || !photo.type.startsWith('image/')) return showToast('미션 인증 사진을 꼭 선택해 주세요.');
+  const aiResult = await verifyPhotoOnDevice(photo, mission);
+  if (!aiResult.approved) return showToast(aiResult.message);
+  showToast(aiResult.message);
   let photoPath;
   try { photoPath = await uploadMissionPhoto(photo, mission.id); } catch { return showToast('사진을 계정 보관함에 저장하지 못했어요. 인터넷 연결을 확인해 주세요.'); }
   const memory = { missionId: mission.id, title: mission.title, photo, photoPath, date: document.querySelector('#memory-date').value, mood: selectedMood, weather: selectedWeather, note: document.querySelector('#memory-note').value.trim(), createdAt: new Date().toISOString() };
@@ -303,7 +357,11 @@ function leisureGuide(item) {
 function leisure() {
   const ageMatches = (item) => leisureFilter.age === '모든 연령' || item.age.includes('모든') || (leisureFilter.age === '청소년' && (item.age.includes('초등') || item.age.includes('청소년'))) || (leisureFilter.age === '가족' && (item.age.includes('초등') || item.age.includes('가족'))) || leisureFilter.age === '성인';
   const filtered = data.leisureActivities.filter(ageMatches).map((item) => ({ ...item, distance: distanceKm(item.latitude, item.longitude) })).sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999));
-  return `<main class="page">${pageTitle('레저 추천', '인원과 나이대에 맞는 부산 바다 체험이에요.')}<div class="leisure-banner" id="weather-status">🌤️ 부산의 실시간 날씨와 파도를 불러오는 중이에요.</div><section class="filter-box"><div class="form-grid"><label class="field">참여 인원<select id="leisure-people">${[1,2,3,4].map((n) => `<option value="${n}" ${leisureFilter.people === String(n) ? 'selected' : ''}>${n === 4 ? '4명 이상' : `${n}명`}</option>`).join('')}</select></label><label class="field">나이대<select id="leisure-age">${['청소년', '성인', '가족', '모든 연령'].map((age) => `<option ${leisureFilter.age === age ? 'selected' : ''}>${age}</option>`).join('')}</select></label></div><button class="recommend" data-action="apply-leisure-filter">이 조건으로 추천받기</button></section><div>${filtered.map((item) => `<article class="leisure-card"><div class="card-top"><span class="tag">${item.type}</span><span class="stars">★★★★★</span></div><h3>${item.emoji} ${item.title}</h3><p class="muted">📍 ${item.place} · ${item.age} · ${leisureFilter.people}명 참여</p><div class="facts"><span>⏱ ${item.minutes}분</span><span>💳 ${won(item.cost)} (예시)</span>${item.distance !== null ? `<span>📍 약 ${item.distance.toFixed(1)}km</span>` : ''}</div>${leisureGuide(item)}<div class="card-actions"><button class="secondary" data-action="map">지도에서 보기</button><button class="start" data-action="booking" data-id="${item.id}">예약 체험하기</button></div></article>`).join('') || '<div class="empty">조건에 맞는 체험이 없어요.</div>'}</div></main>`;
+  const cards = filtered.map((item) => {
+    const saved = savedLeisureIds.includes(item.id);
+    return `<article class="leisure-card"><div class="card-top"><span class="tag">${item.type}</span><span class="stars">★★★★★</span></div><h3>${item.emoji} ${item.title}</h3><p class="muted">📍 ${item.place} · ${item.age} · ${leisureFilter.people}명 참여</p><div class="facts"><span>⏱ ${item.minutes}분</span><span>💳 ${won(item.cost)} (예시)</span>${item.distance !== null ? `<span>📍 약 ${item.distance.toFixed(1)}km</span>` : ''}</div>${leisureGuide(item)}<div class="card-actions"><button class="save ${saved ? 'saved-leisure' : ''}" data-action="like-leisure" data-id="${item.id}" aria-label="${saved ? '저장 취소' : '레저 저장'}" title="${saved ? '저장 취소' : '레저 저장'}">${saved ? '🌊' : '💧'}</button><button class="secondary" data-action="map">지도에서 보기</button><button class="start" data-action="booking" data-id="${item.id}">예약 체험하기</button></div></article>`;
+  }).join('') || '<div class="empty">조건에 맞는 체험이 없어요.</div>';
+  return `<main class="page">${pageTitle('레저 추천', '인원과 나이대에 맞는 부산 바다 체험이에요.')}<div class="leisure-banner" id="weather-status">🌤️ 부산의 실시간 날씨와 파도를 불러오는 중이에요.</div><section class="filter-box"><div class="form-grid"><label class="field">참여 인원<select id="leisure-people">${[1,2,3,4].map((n) => `<option value="${n}" ${leisureFilter.people === String(n) ? 'selected' : ''}>${n === 4 ? '4명 이상' : `${n}명`}</option>`).join('')}</select></label><label class="field">나이대<select id="leisure-age">${['청소년', '성인', '가족', '모든 연령'].map((age) => `<option ${leisureFilter.age === age ? 'selected' : ''}>${age}</option>`).join('')}</select></label></div><button class="recommend" data-action="apply-leisure-filter">이 조건으로 추천받기</button></section><div>${cards}</div></main>`;
 }
 
 function community() {
@@ -323,7 +381,9 @@ function profile() {
     const memory = missionMemories.find((item) => item.missionId === mission.id);
     return `<article class="point-card ${memory ? 'memory-card' : ''}" ${memory ? `data-action="memory-detail" data-id="${mission.id}"` : ''}><b>${mission.title}</b><p class="muted" style="margin-top:5px">${memory ? `${memory.date} · ${memory.mood} ${memory.weather} · 사진과 일기가 있어요` : '미션 인증 완료'}</p><strong style="display:block;color:#13835c;margin-top:9px">+ ${mission.points}P</strong>${memory ? '<small style="display:block;margin-top:9px;color:#08789a">눌러서 추억 다시 보기 →</small>' : ''}</article>`;
   }).join('') || '<div class="empty">아직 완료한 미션이 없어요.</div>';
-  return `<main class="page"><section class="profile-hero"><div class="avatar">🌊</div><h2>${escapeHtml(usernameFromUser(currentUser))}</h2><p>부산 바다를 지키는 오늘의 여행가</p><div class="profile-points">${data.currentUser.points.toLocaleString()} P</div></section><section class="section-title"><div><span class="eyebrow">MY SEA MEMORY</span><h2>미션 인증 내역</h2></div></section>${records}<div class="menu-list" style="margin-top:18px"><button class="menu-row" data-action="signout">로그아웃 <span>→</span></button></div></main>`;
+  const savedLeisure = savedLeisureIds.map((id) => data.leisureActivities.find((item) => item.id === id)).filter(Boolean);
+  const savedCards = savedLeisure.length ? savedLeisure.map((item) => `<article class="point-card"><b>${item.emoji} ${escapeHtml(item.title)}</b><p class="muted" style="margin-top:5px">📍 ${escapeHtml(item.place)} · ${item.minutes}분</p><button class="link-btn" data-go="leisure" style="margin-top:8px">레저 추천에서 보기 →</button></article>`).join('') : '<div class="empty">아직 좋아요한 레저가 없어요.</div>';
+  return `<main class="page"><section class="profile-hero"><div class="avatar">🌊</div><h2>${escapeHtml(usernameFromUser(currentUser))}</h2><p>부산 바다를 지키는 오늘의 여행가</p><div class="profile-points">${data.currentUser.points.toLocaleString()} P</div></section><section class="section-title"><div><span class="eyebrow">MY SEA MEMORY</span><h2>미션 인증 내역</h2></div></section>${records}<section class="section-title" style="margin-top:24px"><div><span class="eyebrow">SAVED LEISURE</span><h2>저장한 레저</h2></div></section>${savedCards}<div class="menu-list" style="margin-top:18px"><button class="menu-row" data-action="signout">로그아웃 <span>→</span></button></div></main>`;
 }
 
 function points() { return `<main class="page">${pageTitle('포인트 내역', '미션 완료 때 포인트가 쌓여요.', 'profile')}<section class="profile-hero"><p>현재 보유 포인트</p><div class="profile-points">${data.currentUser.points.toLocaleString()} P</div></section></main>`; }
@@ -366,20 +426,25 @@ function initSeaMap() {
 
 async function loadNearbySeaPlaces(map, position) {
   const token = ++nearbyLoadToken;
-  const query = `[out:json][timeout:25];(nwr(around:4500,${position.latitude},${position.longitude})["natural"="beach"];nwr(around:4500,${position.latitude},${position.longitude})["amenity"="restaurant"]["cuisine"~"seafood|fish|sushi",i];nwr(around:4500,${position.latitude},${position.longitude})["amenity"="cafe"]["name"~"바다|해변|비치|오션|sea|beach",i];nwr(around:4500,${position.latitude},${position.longitude})["sport"~"surfing|sailing|scuba_diving|swimming|kayak|paddleboarding|fishing",i];nwr(around:4500,${position.latitude},${position.longitude})["leisure"~"marina|water_park",i];nwr(around:4500,${position.latitude},${position.longitude})["shop"~"sports|outdoor|scuba_diving|water_sports|fishing",i];nwr(around:4500,${position.latitude},${position.longitude})["rental"~"boat|kayak|surfboard|scuba_diving|fishing",i];);out center 90;`;
+  const query = `[out:json][timeout:25];(nwr(around:5000,${position.latitude},${position.longitude})["amenity"="cafe"];nwr(around:5000,${position.latitude},${position.longitude})["amenity"="restaurant"]["cuisine"~"seafood|fish|sushi",i];nwr(around:5000,${position.latitude},${position.longitude})["amenity"="restaurant"]["name"~"횟집|회센터|수산|활어|해산물|조개|대게",i];);out center 180;`;
   try {
     const response = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
     if (!response.ok) throw new Error('nearby places request failed');
     const result = await response.json();
     if (token !== nearbyLoadToken || map !== seaMap) return;
+    const shown = new Set();
     result.elements.forEach((item) => {
+      const key = `${item.type}-${item.id}`;
+      if (shown.has(key)) return;
+      shown.add(key);
       const latitude = item.lat ?? item.center?.lat;
       const longitude = item.lon ?? item.center?.lon;
       if (!latitude || !longitude) return;
       const tags = item.tags || {};
       const isGearShop = tags.shop || tags.rental;
-      const type = tags.natural === 'beach' ? '해변' : tags.amenity === 'restaurant' ? '해산물 음식점' : tags.amenity === 'cafe' ? '바다 카페' : isGearShop ? '해양 용품·대여점' : '바다 레저';
-      const icon = type === '해변' ? '🏖' : type === '해산물 음식점' ? '🐟' : type === '바다 카페' ? '☕' : type === '해양 용품·대여점' ? '🧰' : '🏄';
+      const seafood = /seafood|fish|sushi/i.test(tags.cuisine || '') || /회|수산|해산물|조개|대게/.test(tags.name || '');
+      const type = tags.natural === 'beach' ? '해변' : tags.amenity === 'restaurant' || tags.amenity === 'fast_food' ? (seafood ? '해산물 음식점' : '주변 음식점') : tags.amenity === 'cafe' ? '주변 카페' : isGearShop ? '해양 용품·대여점' : '바다 레저';
+      const icon = type === '해변' ? '🏖' : type === '해산물 음식점' ? '🐟' : type === '주변 음식점' ? '🍽️' : type === '주변 카페' ? '☕' : type === '해양 용품·대여점' ? '🧰' : '🏄';
       addMapMarker(map, { name: tags.name || type, type, icon, latitude, longitude });
     });
   } catch (error) {
@@ -415,7 +480,7 @@ function bookingModal() {
   const people = Number(leisureFilter.people);
   const total = item.cost * people;
   const usable = Math.min(data.currentUser.points, total);
-  return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>${item.emoji} ${item.title} 예약 체험</h2><p class="muted">실제 예약이나 결제는 진행되지 않는 연습 화면입니다.</p><div class="notice" style="margin-top:12px">${people}명 기준 체험 금액(예시) <b>${won(total)}</b><br>보유 포인트 <b>${data.currentUser.points.toLocaleString()}P</b> (1P = 1원 할인)</div><label class="field" style="margin-top:12px">체험 날짜<input id="booking-date" type="date"></label><label class="field" style="margin-top:12px">체험 시간<select id="booking-time"><option>10:00</option><option>13:00</option><option>15:30</option></select></label><label class="field" style="margin-top:12px">사용할 포인트<input id="booking-points" type="number" min="0" max="${usable}" value="${usable}"></label><p class="muted">최대 ${usable.toLocaleString()}P까지 사용할 수 있어요. 사용한 포인트는 차감됩니다.</p><div class="card-actions"><button class="secondary" data-action="close">취소</button><button class="start" data-action="confirm-booking">예약 내용 확인</button></div></section></div>`;
+  return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>${item.emoji} ${item.title} 예약 체험</h2><p class="muted">실제 예약이나 결제는 진행되지 않는 연습 화면입니다.</p><div class="notice" style="margin-top:12px">1명 기준 체험 금액(예시) <b>${won(item.cost)}</b><br>보유 포인트 <b>${data.currentUser.points.toLocaleString()}P</b> (1P = 1원 할인)</div><label class="field" style="margin-top:12px">예약 인원 (필수)<select id="booking-people">${[1,2,3,4,5,6].map((count) => `<option value="${count}" ${count === people ? 'selected' : ''}>${count}명${count === 6 ? ' 이상' : ''}</option>`).join('')}</select></label><label class="field" style="margin-top:12px">체험 날짜<input id="booking-date" type="date" required></label><label class="field" style="margin-top:12px">체험 시간<select id="booking-time"><option>10:00</option><option>13:00</option><option>15:30</option></select></label><label class="field" style="margin-top:12px">사용할 포인트<input id="booking-points" type="number" min="0" max="${usable}" value="${usable}"></label><p class="muted">예약 인원에 따라 금액과 포인트 사용 가능 범위를 계산합니다.</p><div class="card-actions"><button class="secondary" data-action="close">취소</button><button class="start" data-action="confirm-booking">예약 내용 확인</button></div></section></div>`;
 }
 
 function render() {
@@ -549,6 +614,15 @@ app.addEventListener('click', async (event) => {
   if (action === 'memory-weather') { selectedWeather = button.dataset.value; document.querySelectorAll('[data-action="memory-weather"]').forEach((item) => item.classList.toggle('active', item.dataset.value === selectedWeather)); }
   if (action === 'memory-detail') { const memory = missionMemories.find((item) => item.missionId === button.dataset.id); if (memory) await openMissionMemory(memory); }
   if (action === 'apply-leisure-filter') { leisureFilter = { people: document.querySelector('#leisure-people').value, age: document.querySelector('#leisure-age').value }; render(); }
+  if (action === 'like-leisure') {
+    if (!currentUser) { showToast('저장하려면 먼저 로그인해 주세요.'); await openAuthModal(); return; }
+    const id = button.dataset.id;
+    const wasSaved = savedLeisureIds.includes(id);
+    savedLeisureIds = wasSaved ? savedLeisureIds.filter((item) => item !== id) : [...savedLeisureIds, id];
+    saveSavedLeisure();
+    render();
+    showToast(wasSaved ? '저장 목록에서 뺐어요.' : '마이 페이지의 저장한 레저에 담았어요.');
+  }
   if (action === 'map' || action === 'inquiry') showToast('프로토타입에서는 예시 안내를 보여줍니다.');
   if (action === 'booking') {
     if (!currentUser) { showToast('포인트를 사용하려면 먼저 로그인해 주세요.'); await openAuthModal(); return; }
@@ -565,15 +639,17 @@ app.addEventListener('click', async (event) => {
   if (action === 'signin') submitAuth('signin');
   if (action === 'submit-review') submitReview();
   if (action === 'confirm-booking') {
+    const people = Number(document.querySelector('#booking-people')?.value);
+    if (!Number.isInteger(people) || people < 1) return showToast('예약 인원을 선택해 주세요.');
     const points = Number(document.querySelector('#booking-points').value);
-    const total = bookingActivity.cost * Number(leisureFilter.people);
+    const total = bookingActivity.cost * people;
     const available = Math.min(data.currentUser.points, total);
     if (!Number.isInteger(points) || points < 0 || points > available) return showToast(`0P부터 ${available.toLocaleString()}P까지 입력해 주세요.`);
     data.currentUser.points -= points;
     saveProgress();
     document.querySelector('.modal')?.remove();
     render();
-    showToast(`예약 체험 완료! ${points.toLocaleString()}P 할인 적용 (결제는 진행되지 않았어요).`);
+    showToast(`${people}명 예약 체험 완료! ${points.toLocaleString()}P 할인 적용 (결제는 진행되지 않았어요).`);
   }
   if (action === 'signout') await signOut();
 });
@@ -602,6 +678,7 @@ async function submitAuth(type) {
     saveSession(result);
     currentUser = result.user;
     loadProgress();
+    loadSavedLeisure();
     await loadMissionMemories();
     await loadCloudProgress();
     await migrateLocalPhotosToCloud();
@@ -648,6 +725,7 @@ async function initialize() {
   }
   currentUser = getStoredSession()?.user || null;
   loadProgress();
+  loadSavedLeisure();
   await loadMissionMemories();
   await loadCloudProgress();
   await migrateLocalPhotosToCloud();
