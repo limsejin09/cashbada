@@ -92,12 +92,12 @@ async function uploadMissionPhoto(photo, missionId) {
 }
 
 async function loadMissionPhoto(memory) {
-  if (memory.photo || !memory.photoPath) return;
-  const response = await fetch(`${supabaseSettings.url}/storage/v1/object/mission-photos/${memory.photoPath}`, {
-    headers: { apikey: supabaseSettings.publishableKey, Authorization: `Bearer ${getStoredSession()?.access_token}` }
+  if (memory.photo || memory.photoUrl || !memory.photoPath) return;
+  const signed = await supabaseRequest(`/storage/v1/object/sign/mission-photos/${memory.photoPath}`, {
+    method: 'POST', body: JSON.stringify({ expiresIn: 3600 })
   });
-  if (!response.ok) throw new Error('사진을 불러오지 못했어요.');
-  memory.photo = await response.blob();
+  if (!signed?.signedURL) throw new Error('사진 주소를 만들지 못했어요.');
+  memory.photoUrl = `${supabaseSettings.url}/storage/v1${signed.signedURL}`;
 }
 
 async function openMissionMemory(memory) {
@@ -271,7 +271,8 @@ function missionDetail() {
 }
 
 function missionMemoryModal(memory) {
-  const photo = memory.photo ? `<img src="${URL.createObjectURL(memory.photo)}" alt="미션 인증 사진" style="width:100%;max-height:320px;object-fit:cover;border-radius:16px;margin:16px 0">` : '<p class="muted" style="margin:16px 0">이 기기에는 인증 사진이 저장되어 있지 않아요. 기록 내용은 계정에 안전하게 연결되어 있습니다.</p>';
+  const imageSource = memory.photoUrl || (memory.photo ? URL.createObjectURL(memory.photo) : '');
+  const photo = imageSource ? `<img src="${imageSource}" alt="미션 인증 사진" style="width:100%;max-height:320px;object-fit:cover;border-radius:16px;margin:16px 0">` : '<p class="muted" style="margin:16px 0">이 인증 사진은 아직 계정 보관함에 연결되지 않았어요.</p>';
   return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>${escapeHtml(memory.title)}</h2><p class="muted">${memory.date} · ${memory.mood} 기분 · ${memory.weather} 날씨</p>${photo}<div class="notice"><b>나의 바다 일기</b><br>${escapeHtml(memory.note || '감상평을 남기지 않았어요.').replace(/\n/g, '<br>')}</div></section></div>`;
 }
 
