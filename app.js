@@ -22,7 +22,7 @@ let savedLeisureIds = [];
 let selectedMood = '😊';
 let selectedWeather = '🌤️';
 let localPhotoClassifier = null;
-const APP_RELEASE = 12;
+const APP_RELEASE = 13;
 const APP_VERSION = `1.${String(APP_RELEASE).padStart(2, '0')}`;
 
 const won = (number) => number === 0 ? '무료' : `${number.toLocaleString()}원`;
@@ -438,6 +438,25 @@ const defaultSeaPlaces = [
   { name: '송정 서핑 입문', type: '바다 레저', icon: '🏄', latitude: 35.1785, longitude: 129.1995 }
 ];
 
+const coastalAreas = [
+  { name: '다대포 해수욕장', latitude: 35.0485, longitude: 128.9656 },
+  { name: '송도 해수욕장', latitude: 35.0774, longitude: 129.0176 },
+  { name: '광안리 해수욕장', latitude: 35.1532, longitude: 129.1187 },
+  { name: '해운대 해수욕장', latitude: 35.1587, longitude: 129.1604 },
+  { name: '송정 해수욕장', latitude: 35.1785, longitude: 129.1995 },
+  { name: '기장 연화리 해안', latitude: 35.2285, longitude: 129.2270 }
+];
+
+function coastDistanceKm(first, second) {
+  const radians = (value) => value * Math.PI / 180;
+  const lat = radians(second.latitude - first.latitude);
+  const lng = radians(second.longitude - first.longitude);
+  const value = Math.sin(lat / 2) ** 2 + Math.cos(radians(first.latitude)) * Math.cos(radians(second.latitude)) * Math.sin(lng / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+}
+
+const nearbyCoastalAreas = (position) => coastalAreas.filter((area) => coastDistanceKm(position, area) <= 12).sort((a, b) => coastDistanceKm(position, a) - coastDistanceKm(position, b)).slice(0, 3);
+
 function addMapMarker(map, place) {
   const marker = L.marker([place.latitude, place.longitude], {
     icon: L.divIcon({ className: 'sea-pin', html: `<div style="font-size:25px;filter:drop-shadow(0 2px 2px #1238)">${place.icon}</div>`, iconSize: [30, 34], iconAnchor: [15, 30] })
@@ -449,16 +468,18 @@ function addMapMarker(map, place) {
 function initSeaMap() {
   const container = document.querySelector('#nearby-map');
   if (!container || !window.L) return;
-  const target = mapFocus || userPosition;
+  const nearestCoast = !mapFocus && userPosition ? nearbyCoastalAreas(userPosition)[0] : null;
+  const target = mapFocus || nearestCoast || userPosition;
   const center = target ? [target.latitude, target.longitude] : [35.1595, 129.1593];
-  seaMap = L.map('nearby-map', { zoomControl: true, scrollWheelZoom: true, tap: true }).setView(center, mapFocus ? 15 : userPosition ? 14 : 11);
+  seaMap = L.map('nearby-map', { zoomControl: true, scrollWheelZoom: true, tap: true }).setView(center, mapFocus ? 15 : nearestCoast ? 13 : userPosition ? 14 : 11);
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(seaMap);
   if (mapFocus) {
     const marker = addMapMarker(seaMap, mapFocus);
     marker.openPopup();
     loadNearbySeaPlaces(seaMap, mapFocus);
   } else if (userPosition) {
-    L.circleMarker(center, { radius: 9, color: '#fff', weight: 3, fillColor: '#ff8068', fillOpacity: 1 }).addTo(seaMap).bindPopup('<b>현재 위치</b>').openPopup();
+    L.circleMarker([userPosition.latitude, userPosition.longitude], { radius: 9, color: '#fff', weight: 3, fillColor: '#ff8068', fillOpacity: 1 }).addTo(seaMap).bindPopup('<b>현재 위치</b>');
+    if (nearestCoast) addMapMarker(seaMap, { ...nearestCoast, type: '가까운 바닷가', icon: '🏖' }).openPopup();
     loadNearbySeaPlaces(seaMap, userPosition);
   } else {
     defaultSeaPlaces.forEach((place) => addMapMarker(seaMap, place));
@@ -467,7 +488,13 @@ function initSeaMap() {
 
 async function loadNearbySeaPlaces(map, position) {
   const token = ++nearbyLoadToken;
-  const query = `[out:json][timeout:25];(nwr(around:8000,${position.latitude},${position.longitude})["natural"~"beach|coastline",i];nwr(around:8000,${position.latitude},${position.longitude})["amenity"="cafe"];nwr(around:8000,${position.latitude},${position.longitude})["amenity"="restaurant"]["cuisine"~"seafood|fish|sushi",i];nwr(around:8000,${position.latitude},${position.longitude})["amenity"="restaurant"]["name"~"횟집|회센터|수산|활어|해산물|조개|대게",i];nwr(around:8000,${position.latitude},${position.longitude})["tourism"~"attraction|museum|viewpoint|information|aquarium|gallery",i];nwr(around:8000,${position.latitude},${position.longitude})["leisure"~"marina|water_park|beach_resort",i];nwr(around:8000,${position.latitude},${position.longitude})["sport"~"surfing|sailing|scuba_diving|swimming|kayak|paddleboarding|fishing",i];nwr(around:8000,${position.latitude},${position.longitude})["shop"~"sports|outdoor|scuba_diving|water_sports|fishing",i];nwr(around:8000,${position.latitude},${position.longitude})["rental"~"boat|kayak|surfboard|scuba_diving|fishing",i];);out center 250;`;
+  const areas = nearbyCoastalAreas(position);
+  if (!areas.length) {
+    defaultSeaPlaces.forEach((place) => addMapMarker(map, place));
+    return showToast('가까운 부산 해변을 찾지 못해 대표 바다 장소를 표시했어요.');
+  }
+  const areaQueries = areas.map((area) => `nwr(around:1700,${area.latitude},${area.longitude})["amenity"="cafe"];nwr(around:1700,${area.latitude},${area.longitude})["amenity"="restaurant"]["cuisine"~"seafood|fish|sushi",i];nwr(around:1700,${area.latitude},${area.longitude})["amenity"="restaurant"]["name"~"횟집|회센터|수산|활어|해산물|조개|대게",i];nwr(around:1700,${area.latitude},${area.longitude})["tourism"~"attraction|museum|viewpoint|information|aquarium|gallery",i];nwr(around:1700,${area.latitude},${area.longitude})["leisure"~"marina|water_park|beach_resort",i];nwr(around:1700,${area.latitude},${area.longitude})["sport"~"surfing|sailing|scuba_diving|swimming|kayak|paddleboarding|fishing",i];nwr(around:1700,${area.latitude},${area.longitude})["shop"~"sports|outdoor|scuba_diving|water_sports|fishing",i];nwr(around:1700,${area.latitude},${area.longitude})["rental"~"boat|kayak|surfboard|scuba_diving|fishing",i];`).join('');
+  const query = `[out:json][timeout:25];(${areaQueries});out center 250;`;
   try {
     const response = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
     if (!response.ok) throw new Error('nearby places request failed');
