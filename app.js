@@ -8,6 +8,8 @@ let screen = 'home';
 let chosenPlace = data.places[0];
 let chosenMission = null;
 let recommendations = data.missions.slice(0, 6);
+let missionDestination = 'all';
+let missionPlaceQuery = '';
 let leisureFilter = { people: '2', age: '청소년' };
 let userPosition = null;
 let mapFocus = null;
@@ -22,7 +24,7 @@ let savedLeisureIds = [];
 let selectedMood = '😊';
 let selectedWeather = '🌤️';
 let localPhotoClassifier = null;
-const APP_RELEASE = 13;
+const APP_RELEASE = 14;
 const APP_VERSION = `1.${String(APP_RELEASE).padStart(2, '0')}`;
 
 const won = (number) => number === 0 ? '무료' : `${number.toLocaleString()}원`;
@@ -300,7 +302,7 @@ function header() {
   const account = currentUser
     ? `<button class="points" data-go="profile">👤 ${escapeHtml(usernameFromUser(currentUser))}</button>`
     : '<button class="points" data-action="auth-form">로그인</button>';
-  return `<header class="header"><button class="brand" data-go="home" aria-label="첫 화면으로"><span class="logo">🌊</span><span><b>캐시 바다 <em class="app-version">v${APP_VERSION}</em></b><small>CATCH SEA</small></span></button><div class="top-actions">${account}<button class="points" data-go="points">🐚 ${data.currentUser.points.toLocaleString()}P</button></div></header>`;
+  return `<header class="header"><button class="brand" data-go="home" aria-label="첫 화면으로"><span class="logo">🌊</span><span><b>캐시 바다 <em class="app-version">v${APP_VERSION}</em></b><small>Cash Bada</small></span></button><div class="top-actions">${account}<button class="points" data-go="points">🐚 ${data.currentUser.points.toLocaleString()}P</button></div></header>`;
 }
 
 function navigation() {
@@ -335,7 +337,8 @@ function missionCard(mission) {
 }
 
 function missions() {
-  return `<main class="page">${pageTitle('오늘의 미션', '조건에 맞춰 새로운 바다 미션을 추천해요.')}<section class="filter-box"><div class="form-grid"><label class="field">가능 시간<select id="time"><option value="30">30분</option><option value="90" selected>90분</option><option value="120">120분</option></select></label><label class="field">예산<select id="budget"><option value="0">0원</option><option value="20000" selected>2만원 이하</option><option value="50000">5만원 이하</option></select></label><label class="field full">관심 분야<select id="interest"><option value="전체">전체</option><option value="사진">사진</option><option value="환경">환경</option><option value="먹거리">먹거리</option><option value="레저">레저</option></select></label></div><button class="recommend" data-action="recommend">조건에 맞는 미션 추천받기</button></section><div>${recommendations.map(missionCard).join('')}</div></main>`;
+  const destinationOptions = [{ id: 'all', name: '대표 해안 권역 선택' }, { id: 'current', name: '현재 위치 근처' }, ...missionAreas].map((area) => `<option value="${area.id}" ${missionDestination === area.id ? 'selected' : ''}>${area.name}</option>`).join('');
+  return `<main class="page">${pageTitle('오늘의 미션', '목적지나 현재 위치 주변의 바다 미션만 추천해요.')}<section class="filter-box"><div class="form-grid"><label class="field full">미션 목적지<select id="mission-destination">${destinationOptions}</select></label><label class="field full">직접 입력<input id="mission-place-query" value="${escapeHtml(missionPlaceQuery)}" placeholder="예: 자갈치시장, 해운대, 송도"></label><label class="field">가능 시간<select id="time"><option value="30">30분</option><option value="90" selected>90분</option><option value="120">120분</option></select></label><label class="field">예산<select id="budget"><option value="0">0원</option><option value="20000" selected>2만원 이하</option><option value="50000">5만원 이하</option></select></label><label class="field full">관심 분야<select id="interest"><option value="전체">전체</option><option value="사진">사진</option><option value="환경">환경</option><option value="먹거리">먹거리</option><option value="레저">레저</option></select></label></div><p class="muted" style="margin:12px 0 0">직접 입력이 있으면 그 장소를 우선 적용해요. 현재 위치는 권한 허용 뒤에 사용할 수 있어요.</p><button class="recommend" data-action="recommend">이 주변 미션 추천받기</button></section><div>${recommendations.map(missionCard).join('') || '<div class="empty">이 주변에는 조건에 맞는 미션이 없어요. 시간·예산 조건을 넓히거나 다른 목적지를 골라 보세요.</div>'}</div></main>`;
 }
 
 function missionDetail() {
@@ -446,6 +449,28 @@ const coastalAreas = [
   { name: '송정 해수욕장', latitude: 35.1785, longitude: 129.1995 },
   { name: '기장 연화리 해안', latitude: 35.2285, longitude: 129.2270 }
 ];
+
+const missionAreas = [
+  { id: 'gwangalli', name: '광안리·민락', latitude: 35.1532, longitude: 129.1187, keywords: ['광안리', '민락'] },
+  { id: 'haeundae', name: '해운대·청사포·송정', latitude: 35.165, longitude: 129.18, keywords: ['해운대', '청사포', '송정'] },
+  { id: 'yeongdo', name: '영도·자갈치·송도', latitude: 35.0782, longitude: 129.0803, keywords: ['영도', '흰여울', '자갈치', '송도', '해양박물관', '감천', '북항', '부산항'] },
+  { id: 'dadaepo', name: '다대포', latitude: 35.0485, longitude: 128.9656, keywords: ['다대포'] },
+  { id: 'gijang', name: '기장', latitude: 35.2285, longitude: 129.2270, keywords: ['기장'] },
+  { id: 'oryukdo', name: '오륙도', latitude: 35.0989, longitude: 129.1214, keywords: ['오륙도'] }
+];
+
+function missionAreaFor(mission) {
+  const text = `${mission.title} ${mission.location}`;
+  return missionAreas.find((area) => area.keywords.some((keyword) => text.includes(keyword))) || null;
+}
+
+function destinationFromText(query) {
+  const normalized = query.replace(/\s/g, '');
+  const area = missionAreas.find((item) => [item.name, ...item.keywords].some((keyword) => normalized.includes(keyword.replace(/\s/g, ''))));
+  if (area) return area;
+  const matchingMission = data.missions.find((mission) => `${mission.title}${mission.location}`.replace(/\s/g, '').includes(normalized));
+  return matchingMission ? missionAreaFor(matchingMission) : null;
+}
 
 function coastDistanceKm(first, second) {
   const radians = (value) => value * Math.PI / 180;
@@ -615,9 +640,24 @@ function recommendMissions() {
   const time = Number(document.querySelector('#time').value);
   const budget = Number(document.querySelector('#budget').value);
   const interest = document.querySelector('#interest').value;
+  missionDestination = document.querySelector('#mission-destination').value;
+  missionPlaceQuery = document.querySelector('#mission-place-query').value.trim();
+  const selectedArea = missionPlaceQuery
+    ? destinationFromText(missionPlaceQuery)
+    : missionDestination === 'current'
+    ? userPosition
+    : missionAreas.find((area) => area.id === missionDestination);
+  if (missionPlaceQuery && !selectedArea) return showToast('입력한 장소와 가까운 미션을 찾지 못했어요. 광안리, 해운대, 자갈치시장처럼 입력해 주세요.');
+  if (missionDestination === 'current' && !userPosition && !missionPlaceQuery) return requestLocation();
+  if (!selectedArea) return showToast('목적지나 현재 위치를 선택해 주세요.');
   const candidates = data.missions.filter((m) => m.minutes <= time && m.cost <= budget && (interest === '전체' || m.category === interest));
-  recommendations = [...candidates, ...data.missions.filter((m) => !candidates.includes(m))].slice(0, 6);
+  const nearby = candidates.map((mission) => {
+    const area = missionAreaFor(mission);
+    return { mission, distance: area ? coastDistanceKm(selectedArea, area) : Number.MAX_SAFE_INTEGER };
+  }).filter(({ distance }) => distance <= 8).sort((first, second) => first.distance - second.distance).map(({ mission }) => mission);
+  recommendations = nearby.slice(0, 6);
   render();
+  if (recommendations.length) showToast(`${missionPlaceQuery || (missionDestination === 'current' ? '현재 위치' : selectedArea.name)} 주변 미션만 보여드려요.`);
 }
 
 async function loadBusanWeather() {
