@@ -25,6 +25,7 @@ let localPhotoClassifier = null;
 const won = (number) => number === 0 ? '무료' : `${number.toLocaleString()}원`;
 const escapeHtml = (value = '') => String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
 const usernameFromUser = (user) => user?.user_metadata?.username || user?.email?.split('@')[0] || '바다 친구';
+const isDemoUser = () => Boolean(currentUser?.isDemo);
 const formatDate = (value) => new Intl.DateTimeFormat('ko-KR', { month: 'short', day: 'numeric' }).format(new Date(value));
 const progressKey = () => currentUser ? `cashbada-progress-${currentUser.id}` : null;
 const leisureSaveKey = () => currentUser ? `cashbada-leisure-saves-${currentUser.id}` : null;
@@ -45,7 +46,7 @@ const loadProgress = () => {
 const saveProgress = () => {
   const key = progressKey();
   if (key) localStorage.setItem(key, JSON.stringify({ points: data.currentUser.points, completedMissionIds: data.currentUser.completedMissionIds }));
-  if (currentUser) void syncProgressToCloud();
+  if (currentUser && !isDemoUser()) void syncProgressToCloud();
 };
 const loadSavedLeisure = () => {
   const key = leisureSaveKey();
@@ -55,7 +56,7 @@ const loadSavedLeisure = () => {
 const saveSavedLeisure = () => {
   const key = leisureSaveKey();
   if (key) localStorage.setItem(key, JSON.stringify(savedLeisureIds));
-  if (currentUser) void syncProgressToCloud();
+  if (currentUser && !isDemoUser()) void syncProgressToCloud();
 };
 const showToast = (message) => {
   toast.textContent = message;
@@ -105,11 +106,38 @@ async function verifyPhotoOnDevice(photo, mission) {
 }
 
 const sessionStorageKey = 'cashbada-login-session';
+const demoReviewsKey = 'cashbada-demo-community-posts';
 const getStoredSession = () => {
   try { return JSON.parse(localStorage.getItem(sessionStorageKey) || 'null'); } catch { return null; }
 };
 const saveSession = (session) => localStorage.setItem(sessionStorageKey, JSON.stringify(session));
 const clearSession = () => localStorage.removeItem(sessionStorageKey);
+const getDemoReviews = () => {
+  try { return JSON.parse(localStorage.getItem(demoReviewsKey) || '[]'); } catch { return []; }
+};
+const saveDemoReviews = (posts) => localStorage.setItem(demoReviewsKey, JSON.stringify(posts));
+
+async function startDemo() {
+  let publicDemo = false;
+  try {
+    const session = await supabaseRequest('/auth/v1/signup', { method: 'POST', body: JSON.stringify({ data: { username: '데모 여행가' } }) });
+    if (!session?.access_token || !session?.user) throw new Error('데모 계정을 만들지 못했어요.');
+    currentUser = { ...session.user, isDemo: true };
+    saveSession({ ...session, user: currentUser, isDemo: true });
+    publicDemo = true;
+  } catch (error) {
+    console.warn('공개 데모 계정 연결 오류:', error);
+    currentUser = { id: 'demo-local-user', isDemo: true, user_metadata: { username: '데모 여행가' } };
+    saveSession({ user: currentUser, isDemo: true });
+  }
+  loadProgress();
+  loadSavedLeisure();
+  await loadMissionMemories();
+  document.querySelector('.modal')?.remove();
+  screen = 'profile';
+  render();
+  showToast(publicDemo ? '공개 데모를 시작했어요. 데모 후기도 커뮤니티에 남아요!' : '데모 체험을 시작했어요. 현재 후기는 이 브라우저에만 저장돼요.');
+}
 async function supabaseRequest(path, options = {}) {
   const session = getStoredSession();
   const headers = {
@@ -154,7 +182,7 @@ async function openMissionMemory(memory) {
 }
 
 async function migrateLocalPhotosToCloud() {
-  if (!currentUser) return;
+  if (!currentUser || isDemoUser()) return;
   let migrated = false;
   for (const memory of missionMemories) {
     if (!memory.photo || memory.photoPath) continue;
@@ -164,7 +192,7 @@ async function migrateLocalPhotosToCloud() {
 }
 
 async function syncProgressToCloud() {
-  if (!currentUser) return;
+  if (!currentUser || isDemoUser()) return;
   try {
     await supabaseRequest('/rest/v1/user_progress', {
       method: 'POST',
@@ -182,7 +210,7 @@ async function syncProgressToCloud() {
 }
 
 async function loadCloudProgress() {
-  if (!currentUser) return;
+  if (!currentUser || isDemoUser()) return;
   try {
     const rows = await supabaseRequest(`/rest/v1/user_progress?user_id=eq.${encodeURIComponent(currentUser.id)}&select=points,completed_mission_ids,mission_memories,saved_leisure_ids`);
     const saved = rows?.[0];
@@ -201,7 +229,9 @@ async function loadCloudProgress() {
 
 async function signOut() {
   // 서버 연결에 실패해도 이 기기에 남은 로그인 정보는 반드시 지웁니다.
-  try { await supabaseRequest('/auth/v1/logout', { method: 'POST' }); } catch (error) { console.warn('서버 로그아웃 처리:', error); }
+  if (!isDemoUser()) {
+    try { await supabaseRequest('/auth/v1/logout', { method: 'POST' }); } catch (error) { console.warn('서버 로그아웃 처리:', error); }
+  }
   clearSession();
   currentUser = null;
   data.currentUser.points = 0;
@@ -244,7 +274,7 @@ async function saveMissionMemory(memory) {
   await new Promise((resolve, reject) => { transaction.oncomplete = resolve; transaction.onerror = () => reject(transaction.error); });
   missionMemories = missionMemories.filter((item) => item.missionId !== memory.missionId);
   missionMemories.unshift(memory);
-  if (currentUser) void syncProgressToCloud();
+  if (currentUser && !isDemoUser()) void syncProgressToCloud();
 }
 
 window.addEventListener('error', (event) => {
@@ -336,7 +366,9 @@ async function submitMissionVerification(mission) {
   if (!aiResult.approved) return showToast(aiResult.message);
   showToast(aiResult.message);
   let photoPath;
-  try { photoPath = await uploadMissionPhoto(photo, mission.id); } catch { return showToast('사진을 계정 보관함에 저장하지 못했어요. 인터넷 연결을 확인해 주세요.'); }
+  if (!isDemoUser()) {
+    try { photoPath = await uploadMissionPhoto(photo, mission.id); } catch { return showToast('사진을 계정 보관함에 저장하지 못했어요. 인터넷 연결을 확인해 주세요.'); }
+  }
   const memory = { missionId: mission.id, title: mission.title, photo, photoPath, date: document.querySelector('#memory-date').value, mood: selectedMood, weather: selectedWeather, note: document.querySelector('#memory-note').value.trim(), createdAt: new Date().toISOString() };
   try { await saveMissionMemory(memory); } catch { return showToast('사진 저장 공간이 부족해 인증하지 못했어요.'); }
   if (!data.currentUser.completedMissionIds.includes(mission.id)) { data.currentUser.completedMissionIds.push(mission.id); data.currentUser.points += mission.points; saveProgress(); }
@@ -383,13 +415,13 @@ function profile() {
   }).join('') || '<div class="empty">아직 완료한 미션이 없어요.</div>';
   const savedLeisure = savedLeisureIds.map((id) => data.leisureActivities.find((item) => item.id === id)).filter(Boolean);
   const savedCards = savedLeisure.length ? savedLeisure.map((item) => `<article class="point-card"><b>${item.emoji} ${escapeHtml(item.title)}</b><p class="muted" style="margin-top:5px">📍 ${escapeHtml(item.place)} · ${item.minutes}분</p><button class="link-btn" data-go="leisure" style="margin-top:8px">레저 추천에서 보기 →</button></article>`).join('') : '<div class="empty">아직 좋아요한 레저가 없어요.</div>';
-  return `<main class="page"><section class="profile-hero"><div class="avatar">🌊</div><h2>${escapeHtml(usernameFromUser(currentUser))}</h2><p>부산 바다를 지키는 오늘의 여행가</p><div class="profile-points">${data.currentUser.points.toLocaleString()} P</div></section><section class="section-title"><div><span class="eyebrow">MY SEA MEMORY</span><h2>미션 인증 내역</h2></div></section>${records}<section class="section-title" style="margin-top:24px"><div><span class="eyebrow">SAVED LEISURE</span><h2>저장한 레저</h2></div></section>${savedCards}<div class="menu-list" style="margin-top:18px"><button class="menu-row" data-action="signout">로그아웃 <span>→</span></button></div></main>`;
+  return `<main class="page"><section class="profile-hero"><div class="avatar">🌊</div><h2>${escapeHtml(usernameFromUser(currentUser))}</h2><p>${isDemoUser() ? '데모 체험 중 · 기록은 이 브라우저에만 저장돼요' : '부산 바다를 지키는 오늘의 여행가'}</p><div class="profile-points">${data.currentUser.points.toLocaleString()} P</div></section><section class="section-title"><div><span class="eyebrow">MY SEA MEMORY</span><h2>미션 인증 내역</h2></div></section>${records}<section class="section-title" style="margin-top:24px"><div><span class="eyebrow">SAVED LEISURE</span><h2>저장한 레저</h2></div></section>${savedCards}<div class="menu-list" style="margin-top:18px"><button class="menu-row" data-action="signout">로그아웃 <span>→</span></button></div></main>`;
 }
 
 function points() { return `<main class="page">${pageTitle('포인트 내역', '미션 완료 때 포인트가 쌓여요.', 'profile')}<section class="profile-hero"><p>현재 보유 포인트</p><div class="profile-points">${data.currentUser.points.toLocaleString()} P</div></section></main>`; }
 
 function authModal() {
-  return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>캐시 바다 계정</h2><p class="muted">이메일 없이 아이디와 비밀번호만 사용해요.</p><label class="field" style="margin-top:12px">아이디<input id="auth-username" autocomplete="username" placeholder="영문, 숫자, . _ - (3~20자)"></label><label class="field" style="margin-top:12px">비밀번호<input id="auth-password" type="password" autocomplete="current-password" placeholder="6자 이상"></label><label class="consent"><input id="auth-consent" type="checkbox"> <span>서비스 이용을 위한 아이디·비밀번호 처리와 내 미션 기록 저장에 동의합니다.</span></label><div class="card-actions"><button class="secondary" data-action="signin">로그인</button><button class="start" data-action="signup">회원가입</button></div></section></div>`;
+  return `<div class="modal"><section class="modal-card" role="dialog" aria-modal="true"><button class="modal-close" data-action="close" aria-label="닫기">×</button><h2>캐시 바다 계정</h2><p class="muted">이메일 없이 아이디와 비밀번호만 사용해요.</p><label class="field" style="margin-top:12px">아이디<input id="auth-username" autocomplete="username" placeholder="영문, 숫자, . _ - (3~20자)"></label><label class="field" style="margin-top:12px">비밀번호<input id="auth-password" type="password" autocomplete="current-password" placeholder="6자 이상"></label><label class="consent"><input id="auth-consent" type="checkbox"> <span>서비스 이용을 위한 아이디·비밀번호 처리와 내 미션 기록 저장에 동의합니다.</span></label><div class="card-actions"><button class="secondary" data-action="signin">로그인</button><button class="start" data-action="signup">회원가입</button></div><button class="recommend" data-action="demo-login" style="margin-top:12px">데모로 하기</button><p class="muted" style="margin-top:8px;font-size:12px">데모 미션 기록·사진은 이 브라우저에만 저장돼요. 후기는 공개 커뮤니티에 등록할 수 있어요.</p></section></div>`;
 }
 
 function reviewModal() {
@@ -637,6 +669,7 @@ app.addEventListener('click', async (event) => {
   if (action === 'close') document.querySelector('.modal')?.remove();
   if (action === 'signup') submitAuth('signup');
   if (action === 'signin') submitAuth('signin');
+  if (action === 'demo-login') await startDemo();
   if (action === 'submit-review') submitReview();
   if (action === 'confirm-booking') {
     const people = Number(document.querySelector('#booking-people')?.value);
@@ -656,7 +689,8 @@ app.addEventListener('click', async (event) => {
 
 async function loadCommunityPosts() {
   try {
-    communityPosts = await supabaseRequest('/rest/v1/community_posts?select=*&order=created_at.desc') || [];
+    const sharedPosts = await supabaseRequest('/rest/v1/community_posts?select=*&order=created_at.desc') || [];
+    communityPosts = isDemoUser() ? [...getDemoReviews(), ...sharedPosts] : sharedPosts;
     if (screen === 'community') render();
   } catch (error) { console.error('후기 불러오기 오류:', error); }
 }
@@ -700,6 +734,26 @@ async function submitReview() {
   const body = document.querySelector('#review-body')?.value.trim();
   const rating = Number(document.querySelector('#review-rating')?.value);
   if (!title || !body) return showToast('제목과 후기 내용을 모두 입력해 주세요.');
+  if (isDemoUser()) {
+    const post = { id: `demo-${Date.now()}`, author: usernameFromUser(currentUser), activity, title, rating, body, created_at: new Date().toISOString() };
+    if (getStoredSession()?.access_token) {
+      try {
+        const saved = await supabaseRequest('/rest/v1/community_posts', { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ user_id: currentUser.id, author: post.author, activity, title, rating, body }) });
+        if (!Array.isArray(saved) || !saved[0]?.id) throw new Error('후기 저장 확인에 실패했어요.');
+        document.querySelector('.modal')?.remove();
+        screen = 'community';
+        await loadCommunityPosts();
+        return showToast('데모 후기가 등록되어 다른 사람에게도 보여요.');
+      } catch (error) { console.warn('공개 데모 후기 등록 오류:', error); }
+    }
+    const posts = [post, ...getDemoReviews()];
+    saveDemoReviews(posts);
+    communityPosts = [post, ...communityPosts];
+    document.querySelector('.modal')?.remove();
+    screen = 'community';
+    render();
+    return showToast('데모 후기를 이 브라우저에 등록했어요.');
+  }
   try {
     const saved = await supabaseRequest('/rest/v1/community_posts', { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ user_id: currentUser.id, author: usernameFromUser(currentUser), activity, title, rating, body }) });
     if (!Array.isArray(saved) || !saved[0]?.id) throw new Error('후기 저장 확인에 실패했어요.');
