@@ -22,7 +22,7 @@ let savedLeisureIds = [];
 let selectedMood = '😊';
 let selectedWeather = '🌤️';
 let localPhotoClassifier = null;
-const APP_RELEASE = 11;
+const APP_RELEASE = 12;
 const APP_VERSION = `1.${String(APP_RELEASE).padStart(2, '0')}`;
 
 const won = (number) => number === 0 ? '무료' : `${number.toLocaleString()}원`;
@@ -467,7 +467,7 @@ function initSeaMap() {
 
 async function loadNearbySeaPlaces(map, position) {
   const token = ++nearbyLoadToken;
-  const query = `[out:json][timeout:25];nwr(around:8000,${position.latitude},${position.longitude})["natural"~"beach|coastline",i]->.beaches;(nwr(around.beaches:1200)["amenity"="cafe"];nwr(around.beaches:1200)["amenity"="restaurant"]["cuisine"~"seafood|fish|sushi",i];nwr(around.beaches:1200)["amenity"="restaurant"]["name"~"횟집|회센터|수산|활어|해산물|조개|대게",i];);out center 180;`;
+  const query = `[out:json][timeout:25];(nwr(around:8000,${position.latitude},${position.longitude})["natural"~"beach|coastline",i];nwr(around:8000,${position.latitude},${position.longitude})["amenity"="cafe"];nwr(around:8000,${position.latitude},${position.longitude})["amenity"="restaurant"]["cuisine"~"seafood|fish|sushi",i];nwr(around:8000,${position.latitude},${position.longitude})["amenity"="restaurant"]["name"~"횟집|회센터|수산|활어|해산물|조개|대게",i];nwr(around:8000,${position.latitude},${position.longitude})["tourism"~"attraction|museum|viewpoint|information|aquarium|gallery",i];nwr(around:8000,${position.latitude},${position.longitude})["leisure"~"marina|water_park|beach_resort",i];nwr(around:8000,${position.latitude},${position.longitude})["sport"~"surfing|sailing|scuba_diving|swimming|kayak|paddleboarding|fishing",i];nwr(around:8000,${position.latitude},${position.longitude})["shop"~"sports|outdoor|scuba_diving|water_sports|fishing",i];nwr(around:8000,${position.latitude},${position.longitude})["rental"~"boat|kayak|surfboard|scuba_diving|fishing",i];);out center 250;`;
   try {
     const response = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
     if (!response.ok) throw new Error('nearby places request failed');
@@ -483,9 +483,11 @@ async function loadNearbySeaPlaces(map, position) {
       if (!latitude || !longitude) return;
       const tags = item.tags || {};
       const isGearShop = tags.shop || tags.rental;
+      const isTourism = tags.tourism;
+      const isSeaLeisure = tags.sport || tags.leisure;
       const seafood = /seafood|fish|sushi/i.test(tags.cuisine || '') || /회|수산|해산물|조개|대게/.test(tags.name || '');
-      const type = tags.natural === 'beach' ? '해변' : tags.amenity === 'restaurant' || tags.amenity === 'fast_food' ? (seafood ? '해산물 음식점' : '주변 음식점') : tags.amenity === 'cafe' ? '주변 카페' : isGearShop ? '해양 용품·대여점' : '바다 레저';
-      const icon = type === '해변' ? '🏖' : type === '해산물 음식점' ? '🐟' : type === '주변 음식점' ? '🍽️' : type === '주변 카페' ? '☕' : type === '해양 용품·대여점' ? '🧰' : '🏄';
+      const type = tags.natural === 'beach' || tags.natural === 'coastline' ? '바닷가' : tags.amenity === 'restaurant' ? '횟집·해산물 음식점' : tags.amenity === 'cafe' ? '바다 카페' : isTourism ? '해양 관광' : isGearShop ? '해양 용품·대여점' : isSeaLeisure ? '바다 레저' : '바다 주변 장소';
+      const icon = type === '바닷가' ? '🏖' : type === '횟집·해산물 음식점' ? '🐟' : type === '바다 카페' ? '☕' : type === '해양 관광' ? '📍' : type === '해양 용품·대여점' ? '🧰' : '🏄';
       addMapMarker(map, { name: tags.name || type, type, icon, latitude, longitude });
     });
   } catch (error) {
